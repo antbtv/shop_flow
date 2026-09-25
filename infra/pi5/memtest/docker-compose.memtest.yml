@@ -7,7 +7,7 @@ x-airflow: &airflow
   image: apache/airflow:3.1.0
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__CORE__PARALLELISM: "4"
+    AIRFLOW__CORE__PARALLELISM: "2"
     AIRFLOW__CORE__LOAD_EXAMPLES: "False"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
@@ -22,7 +22,9 @@ x-airflow: &airflow
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
-    mem_limit: 2560m
+    # max_server_memory_usage is 2 GB; the rest is for the mapped binary and page cache,
+    # which count against the cgroup limit (2560m caused constant reclaim and swapping).
+    mem_limit: 2816m
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
     environment:
@@ -59,7 +61,7 @@ services:
 
   airflow-apiserver:
     <<: *airflow
-    mem_limit: 1024m
+    mem_limit: 768m
     command: api-server
     ports:
       - "${PI5_HOST}:8080:8080"
@@ -68,6 +70,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow
+    # LocalExecutor runs tasks inside this container: ~200 MB per task in Airflow 3.
     mem_limit: 1152m
     command: scheduler
     depends_on:
