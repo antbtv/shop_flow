@@ -35,9 +35,10 @@
   - Закрывает: NFR-2, ADR-0002.
   - Данные на `sda1` не нужны (подтверждено 2026-09-25): переформатируем с меткой и уменьшенным резервом (`-m 1`), но только после проверки SMART.
   - Базовая линия (2026-09-25): WD5000LUCT (WD AV, 5400 rpm, мост JMicron, SMART работает без `-d sat`); `PASSED`, Power_On_Hours 21, атрибуты 5/197/198/199 = 0, Load_Cycle_Count 146, 26 °C. `usb_max_current_enable=1` уже выставлен прошивкой (БП 27 Вт), `throttled=0x0`.
-- [ ] **0.5. Защита SD от износа** (~20 мин)
-  - Журналы: `log2ram` (переживает сбой питания, в отличие от `Storage=volatile`). Swap уже на zram; выяснить, что за неактивный `loop0` (2 ГБ, swap) и где его файл.
-  - Приёмка: `swapon --show` показывает только `/dev/zram0`; `losetup -l` не показывает swap-файла на SD; `/var/log` смонтирован как log2ram.
+- [x] **0.5. Защита SD от износа** (~20 мин)
+  - Сделано (2026-09-25): `rpi-swap` переведён на чистый zram (`Mechanism=zram`), backing-файл `/var/swap` на SD удалён самим `rpi-swap`. Журнал: `/var/log/journal` bind mount из `/mnt/data/journal` (переживает сбой питания, SD не пишется), `SystemMaxUse=500M`. log2ram не понадобился: `rsyslog` нет, journald до этого был volatile.
+  - Приёмка пройдена: `/proc/swaps` только `/dev/zram0`; `/var/swap` нет; `findmnt /var/log/journal` показывает `/dev/sda1[/journal]`.
+  - Компромисс: если HDD не смонтируется, journald пишет в пустой `/var/log/journal` на SD (только при аварии диска).
   - Закрывает: ADR-0002, критерий успеха «≥ 2 недели автономно».
 - [ ] **0.6. Docker на Pi5** (~40 мин)
   - Docker Engine и compose plugin, пользователь в группе `docker`, systemd drop-in `RequiresMountsFor=/mnt/data`.
