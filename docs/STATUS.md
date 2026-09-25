@@ -51,11 +51,10 @@
   - Приёмка пройдена: после reboot `wlan0` = `192.168.0.151/24`, MAC не изменился, `Power save: off`.
   - Для 0.8: глобального IPv6 нет; `NetworkManager-wait-online` включён.
   - Закрывает: PRD 6.1.
-- [ ] **0.8. Файрвол и публикация портов** (~45 мин), по ADR-0003
-  - ufw: `default deny incoming`, `allow` 22 из LAN-подсети, потом `enable`. Правило `DOCKER-USER` в `/etc/ufw/after.rules`. IPv6 по факту наличия глобального адреса. Защита bind при загрузке (`ip_nonlocal_bind` или `network-online.target`) по факту менеджера сети.
-  - Приёмка: тестовый контейнер `docker run -d --restart unless-stopped -p $PI5_HOST:8123:80 nginx` отвечает на `nc -zv $PI5_HOST 8123` с ноутбука; `sudo ss -tlnp` показывает 8123 только на `$PI5_HOST`; `python3 -m http.server 5000` на хосте Pi5 недоступен с ноутбука; `ip -6 addr show scope global` проверен; на роутере нет проброса портов.
+- [x] **0.8. Файрвол и публикация портов** (~45 мин), по ADR-0003
+  - Сделано (2026-09-25): ufw `deny incoming`, 22/tcp только из `192.168.0.0/24`; правило `DOCKER-USER` в `/etc/ufw/after.rules` (DROP с `wlan0` не из LAN). IPv6 глобального нет. `ip_nonlocal_bind` не понадобился: Docker стартует после `network-online.target`.
+  - Приёмка пройдена: с ноутбука `nc` на 8123 (контейнер `porttest` на `192.168.0.151`) проходит, HTTP 200; `http.server` на хосте :5000 недоступен (timeout, ufw); `ss -tlnp` показывает 8123 только на `192.168.0.151`; после reboot ufw активен, `DOCKER-USER` восстановлен, `porttest` поднялся сам. На роутере нет виртуальных серверов, UPnP-пробросов нет, SSDP-запрос IGD без ответа.
   - Закрывает: PRD 6.1.
-  - Риск: потеря SSH. Сначала `ufw allow`, потом `ufw enable`.
 - [ ] **0.9. Проверка памяти: ClickHouse и Airflow** (~1 ч)
   - Пробный запуск arm64-образов, тома на `/mnt/data`, порты на `$PI5_HOST`. Разовая проверка, не итоговый compose.
   - ClickHouse: `max_server_memory_usage` ~2 ГБ, уменьшенный `mark_cache_size`, system-логи (`trace_log`, `metric_log`, `asynchronous_metric_log`, `query_log`) выключены или с TTL. Airflow: LocalExecutor, метабаза Postgres, 1–2 воркера веб-сервера, `load_examples=False`.
