@@ -23,6 +23,7 @@
 - [ ] **0.3. Базовая настройка ОС Pi5** (~40 мин)
   - Отдельный ключ ed25519, алиас `pi5` в `~/.ssh/config`, `sshd_config.d/00-shopflow.conf` (пароли и root выключены), `apt full-upgrade`.
   - Решить судьбу `unattended-upgrades`: выключить или оставить без автоматического reboot (автономность ≥ 2 недель).
+  - Сделано (2026-09-25): вход по ключу, пароль отклоняется (`Permission denied (publickey)`), NTP синхронизирован на Pi5 и ноутбуке. Осталось: `unattended-upgrades`, перезагрузка после `full-upgrade` (совместим с 0.4).
   - Приёмка: `ssh pi5 'uname -m; free -m; timedatectl show -p NTPSynchronized'` выводит `aarch64`, ~8 ГБ и `yes`; `ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password pi5` получает `Permission denied`; `timedatectl` на ноутбуке тоже синхронизирован (нужно для замера NFR-3).
   - Закрывает: NFR-2.
   - Риск: потеря доступа. Пока меняется конфиг `sshd`, держать вторую SSH-сессию открытой.
@@ -30,7 +31,7 @@
   - Синий порт USB 3.0, `/mnt/data` по UUID с `nofail`, `usb_max_current_enable=1`, SMART, `hdparm -S 0` если диск засыпает.
   - Приёмка: `findmnt /mnt/data` показывает ext4; `sudo smartctl -H /dev/disk/by-id/<disk>` (при необходимости `-d sat`) выводит `PASSED`; после `reboot` диск смонтирован; `hdparm -C` после 30 мин простоя показывает `active/idle`, иначе фиксируем, что переходник игнорирует команду.
   - Закрывает: NFR-2, ADR-0002.
-  - Риск: `sda1` уже отформатирован. Выяснить, есть ли на нём нужные данные, до любого `mkfs`.
+  - Данные на `sda1` не нужны (подтверждено 2026-09-25): переформатируем с меткой и уменьшенным резервом (`-m 1`), но только после проверки SMART.
 - [ ] **0.5. Защита SD от износа** (~20 мин)
   - Журналы: `log2ram` (переживает сбой питания, в отличие от `Storage=volatile`). Swap уже на zram; выяснить, что за неактивный `loop0` (2 ГБ, swap) и где его файл.
   - Приёмка: `swapon --show` показывает только `/dev/zram0`; `losetup -l` не показывает swap-файла на SD; `/var/log` смонтирован как log2ram.
@@ -41,7 +42,7 @@
   - Приёмка: `docker info -f '{{.DockerRootDir}}'` выводит `/mnt/data/docker`; `docker info` показывает драйвер хранилища и не выдаёт `WARNING: No memory limit support`; после `docker pull` образа не растёт `du -sh /var/lib/containerd` на SD; `docker run --rm hello-world` проходит; `systemctl show docker -p RequiresMountsFor` содержит `/mnt/data`.
   - Закрывает: NFR-2, NFR-7 (лимиты памяти работают).
 - [ ] **0.7. Фиксированный адрес Pi5** (~20 мин)
-  - Решить: Ethernet или Wi-Fi (MAC у интерфейсов разный, резервация привязана к нему). DHCP-резервация на роутере; проверить, что MAC не рандомизируется.
+  - Ethernet недоступен (решено 2026-09-25), Pi5 остаётся на Wi-Fi. DHCP-резервация на MAC `wlan0`; проверить, что MAC не рандомизируется; выключить энергосбережение Wi-Fi (иначе скачки задержки и обрывы).
   - Приёмка: после перезагрузки `ssh pi5 'ip -4 -brief addr'` показывает адрес из резервации.
   - Закрывает: PRD 6.1.
 - [ ] **0.8. Файрвол и публикация портов** (~45 мин), по ADR-0003
