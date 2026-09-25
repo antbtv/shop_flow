@@ -4,7 +4,8 @@
     <mark_cache_size>268435456</mark_cache_size>
     <index_mark_cache_size>67108864</index_mark_cache_size>
     <uncompressed_cache_size>0</uncompressed_cache_size>
-    <background_pool_size>4</background_pool_size>
+    <!-- background_pool_size is left at default: lowering it below the merge_tree
+         number_of_free_entries_in_pool_* thresholds makes the server refuse to start (code 36). -->
 
     <trace_log remove="1"/>
     <metric_log remove="1"/>
