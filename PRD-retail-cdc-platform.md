@@ -217,6 +217,8 @@ retail-cdc-platform/
 │       ├── data_quality_dag.py
 │       └── retention_dag.py
 ├── dashboards/
+├── infra/
+│   └── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw) и runbook
 ├── docs/
 │   └── architecture.md
 └── README.md
@@ -237,8 +239,12 @@ KAFKA_BOOTSTRAP=localhost:9092
 PI5_HOST=192.168.1.50
 CLICKHOUSE_HTTP_PORT=8123
 CLICKHOUSE_NATIVE_PORT=9000
+CLICKHOUSE_USER=shopflow
+CLICKHOUSE_PASSWORD=changeme
 
 AIRFLOW_WEBSERVER_PORT=8080
+AIRFLOW_ADMIN_USER=admin
+AIRFLOW_ADMIN_PASSWORD=changeme
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```
