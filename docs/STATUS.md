@@ -45,9 +45,11 @@
   - Приёмка пройдена: `root=/mnt/data/docker driver=overlay2`; `/var/lib/docker` нет, `/var/lib/containerd` 388 КБ; `hello-world` проходит; после reboot `cgroup.controllers` содержит `memory`, предупреждений `docker info` нет, `docker run -m 64m` даёт `memory.max=67108864`; Docker `active` поверх `/dev/sda1`; `hdparm -C` = `active/idle` (журнал на HDD не даёт диску засыпать).
   - Урок: в `cmdline.txt` нет завершающего `\n`, `wc -l` даёт 0; проверять через `grep -c ''`.
   - Закрывает: NFR-2, NFR-7 (лимиты памяти работают).
-- [ ] **0.7. Фиксированный адрес Pi5** (~20 мин)
-  - Ethernet недоступен (решено 2026-09-25), Pi5 остаётся на Wi-Fi. DHCP-резервация на MAC `wlan0`; проверить, что MAC не рандомизируется; выключить энергосбережение Wi-Fi (иначе скачки задержки и обрывы).
-  - Приёмка: после перезагрузки `ssh pi5 'ip -4 -brief addr'` показывает адрес из резервации.
+- [x] **0.7. Фиксированный адрес Pi5** (~20 мин)
+  - Ethernet недоступен (решено 2026-09-25), Pi5 на Wi-Fi.
+  - Сделано (2026-09-25): DHCP-резервация на роутере по MAC `wlan0`. Профиль NetworkManager `netplan-wlan0-1521` (trixie: netplan + NM): `802-11-wireless.cloned-mac-address permanent`, `802-11-wireless.powersave 2`.
+  - Приёмка пройдена: после reboot `wlan0` = `192.168.0.151/24`, MAC не изменился, `Power save: off`.
+  - Для 0.8: глобального IPv6 нет; `NetworkManager-wait-online` включён.
   - Закрывает: PRD 6.1.
 - [ ] **0.8. Файрвол и публикация портов** (~45 мин), по ADR-0003
   - ufw: `default deny incoming`, `allow` 22 из LAN-подсети, потом `enable`. Правило `DOCKER-USER` в `/etc/ufw/after.rules`. IPv6 по факту наличия глобального адреса. Защита bind при загрузке (`ip_nonlocal_bind` или `network-online.target`) по факту менеджера сети.
