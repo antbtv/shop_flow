@@ -7,6 +7,7 @@
 - Хранилище Pi5: ОС на SD, данные на внешнем USB HDD 500 ГБ, см. `docs/adr/0002-pi5-storage-external-hdd.md`
 - Сеть Pi5: bind портов на LAN-IP, ufw для хоста, `DOCKER-USER` для контейнеров, см. `docs/adr/0003-pi5-network-exposure.md`
 - Дашборд: Grafana или Superset, не решено (PRD, раздел 13). Допущение: на Pi5 резерв 0,5 ГБ под Grafana; Superset, если выберем, запускается на ноутбуке.
+- Память Pi5: жёсткие `mem_limit`, LocalExecutor, урезанный ClickHouse, см. `docs/adr/0004-pi5-memory-budget.md`
 - Доступ Pi5 → Postgres на ноутбуке (для FR-8): решаем в Milestone 4 отдельным ADR.
 - Репозиторий: `docs/` и PRD в git; `.claude/`, `CLAUDE.md`, `.env` локально.
 
@@ -55,11 +56,11 @@
   - Сделано (2026-09-25): ufw `deny incoming`, 22/tcp только из `192.168.0.0/24`; правило `DOCKER-USER` в `/etc/ufw/after.rules` (DROP с `wlan0` не из LAN). IPv6 глобального нет. `ip_nonlocal_bind` не понадобился: Docker стартует после `network-online.target`.
   - Приёмка пройдена: с ноутбука `nc` на 8123 (контейнер `porttest` на `192.168.0.151`) проходит, HTTP 200; `http.server` на хосте :5000 недоступен (timeout, ufw); `ss -tlnp` показывает 8123 только на `192.168.0.151`; после reboot ufw активен, `DOCKER-USER` восстановлен, `porttest` поднялся сам. На роутере нет виртуальных серверов, UPnP-пробросов нет, SSDP-запрос IGD без ответа.
   - Закрывает: PRD 6.1.
-- [ ] **0.9. Проверка памяти: ClickHouse и Airflow** (~1 ч)
-  - Пробный запуск arm64-образов, тома на `/mnt/data`, порты на `$PI5_HOST`. Разовая проверка, не итоговый compose.
-  - ClickHouse: `max_server_memory_usage` ~2 ГБ, уменьшенный `mark_cache_size`, system-логи (`trace_log`, `metric_log`, `asynchronous_metric_log`, `query_log`) выключены или с TTL. Airflow: LocalExecutor, метабаза Postgres, 1–2 воркера веб-сервера, `load_examples=False`.
-  - Приёмка: сумма `mem_limit` ≤ 6 ГБ (включая резерв 0,5 ГБ под дашборд); через 10 мин после старта `docker stats --no-stream` ≤ 3 ГБ; под нагрузкой (`SELECT ... FROM numbers(1e9) GROUP BY` + тестовый DAG) `dmesg | grep -i oom` пуст и `free -m` показывает available ≥ 1 ГБ; `curl http://$PI5_HOST:8123/ping` возвращает `Ok.`; `nc -zv` проходит для 8123, 9000, 8080.
-  - Закрывает: NFR-7. Итог в ADR-0004 (версия Airflow, executor, лимиты).
+- [x] **0.9. Проверка памяти: ClickHouse и Airflow** (~1 ч), итог в ADR-0004
+  - Сделано (2026-09-25): стенд `infra/pi5/memtest/` (ClickHouse 25.8, Airflow 3.1 LocalExecutor, Postgres). Первый прогон выявил нехватку: ClickHouse 2560m и scheduler при `parallelism` 4 упирались в лимит, уходили в swap. Лимиты скорректированы: ClickHouse 2816m, api-server 768m, `parallelism` 2.
+  - Приёмка пройдена: сумма `mem_limit` 5,5 ГБ + 0,5 ГБ резерв = 6 ГБ; в покое ≈ 1 ГБ; под нагрузкой (`loadtest.sh`: GROUP BY на 1 млрд строк + DAG из 4 задач) `oom_kill` 0, swap 0, min available 4397 МБ, OOM в `dmesg` нет, `throttled=0x0`, 53 °C; DAG `success`; `/ping` = `Ok.`, порты 8123/9000/8080 доступны с ноутбука.
+  - Находки: memory cgroup считает бинарник и кеш ClickHouse (нужен зазор над `max_server_memory_usage`); задача Airflow 3 ≈ 340 МБ; узкое место Pi5 — CPU (GROUP BY 1 млрд строк ≈ 190 с). Активный кулер есть.
+  - Закрывает: NFR-7.
 - [ ] **0.10. Нагрузочный тест диска** (~45 мин)
   - `fio` или запись 10–20 ГБ на `/mnt/data`, параллельно `dmesg -w`.
   - Приёмка: в `dmesg` нет `over-current`, `USB disconnect`, `I/O error`; `vcgencmd get_throttled` до и после теста выводит `throttled=0x0`; скорость последовательной записи и случайного чтения записана; наличие активного кулера зафиксировано.
