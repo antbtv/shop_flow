@@ -2,6 +2,7 @@
 # Milestone 0.9: ClickHouse heavy GROUP BY + memtest DAG at the same time, then a peak-memory summary.
 # Run on Pi5 from ~/memtest after `docker compose -f docker-compose.memtest.yml up -d`.
 set -euo pipefail
+export LC_ALL=C # ru_RU LC_NUMERIC makes awk read "1.402" as 1
 cd "$(dirname "$0")"
 C="docker compose -f docker-compose.memtest.yml"
 SAMPLE_SEC=5
