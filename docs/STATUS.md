@@ -40,10 +40,10 @@
   - Приёмка пройдена: `/proc/swaps` только `/dev/zram0`; `/var/swap` нет; `findmnt /var/log/journal` показывает `/dev/sda1[/journal]`.
   - Компромисс: если HDD не смонтируется, journald пишет в пустой `/var/log/journal` на SD (только при аварии диска).
   - Закрывает: ADR-0002, критерий успеха «≥ 2 недели автономно».
-- [ ] **0.6. Docker на Pi5** (~40 мин)
-  - Docker Engine и compose plugin, пользователь в группе `docker`, systemd drop-in `RequiresMountsFor=/mnt/data`.
-  - `daemon.json`: `data-root=/mnt/data/docker`, ротация логов (`log-driver: local`). Если включено хранилище образов containerd, перенести его `root` на `/mnt/data` или выключить `containerd-snapshotter`.
-  - Приёмка: `docker info -f '{{.DockerRootDir}}'` выводит `/mnt/data/docker`; `docker info` показывает драйвер хранилища и не выдаёт `WARNING: No memory limit support`; после `docker pull` образа не растёт `du -sh /var/lib/containerd` на SD; `docker run --rm hello-world` проходит; `systemctl show docker -p RequiresMountsFor` содержит `/mnt/data`.
+- [x] **0.6. Docker на Pi5** (~40 мин)
+  - Сделано (2026-09-25): Docker 29.8.1, Compose v5.5.1 из репозитория Docker для trixie. `daemon.json`: `data-root=/mnt/data/docker`, `log-driver: local` (20m × 3), `containerd-snapshotter: false`. Drop-in `RequiresMountsFor=/mnt/data`. В `cmdline.txt` добавлено `cgroup_enable=memory cgroup_memory=1` (ядро Pi по умолчанию без memory cgroup, лимиты игнорировались). Конфиги в `infra/pi5/`.
+  - Приёмка пройдена: `root=/mnt/data/docker driver=overlay2`; `/var/lib/docker` нет, `/var/lib/containerd` 388 КБ; `hello-world` проходит; после reboot `cgroup.controllers` содержит `memory`, предупреждений `docker info` нет, `docker run -m 64m` даёт `memory.max=67108864`; Docker `active` поверх `/dev/sda1`; `hdparm -C` = `active/idle` (журнал на HDD не даёт диску засыпать).
+  - Урок: в `cmdline.txt` нет завершающего `\n`, `wc -l` даёт 0; проверять через `grep -c ''`.
   - Закрывает: NFR-2, NFR-7 (лимиты памяти работают).
 - [ ] **0.7. Фиксированный адрес Pi5** (~20 мин)
   - Ethernet недоступен (решено 2026-09-25), Pi5 остаётся на Wi-Fi. DHCP-резервация на MAC `wlan0`; проверить, что MAC не рандомизируется; выключить энергосбережение Wi-Fi (иначе скачки задержки и обрывы).
