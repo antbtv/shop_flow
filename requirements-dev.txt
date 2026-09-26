@@ -1,0 +1,4 @@
+# Dev tools: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+pytest==9.1.1
+ruff==0.16.9
+sqlfluff==4.3.0

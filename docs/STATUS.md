@@ -84,10 +84,10 @@
 
 - [x] **1.0. Ветки** (~10 мин)
   - Сделано (2026-09-26): `milestone-0` влит в `master` (PR #1), ветка `milestone-1` от `master`.
-- [ ] **1.1. Python-инструменты** (~20 мин)
-  - `pyproject.toml` (ruff, pytest), `.sqlfluff` (диалект `clickhouse`), `requirements-dev.txt`, `.venv`.
-  - Приёмка: `ruff check .` и `sqlfluff lint clickhouse/ddl` запускаются без ошибок конфигурации.
-  - Риск: неполная поддержка ClickHouse в sqlfluff, исключения фиксируем в `.sqlfluff`.
+- [x] **1.1. Python-инструменты** (~20 мин)
+  - Сделано (2026-09-26): `pyproject.toml` (ruff, pytest), `.sqlfluff` (диалект `clickhouse`), `requirements-dev.txt` (pytest 9.1.1, ruff 0.16.9, sqlfluff 4.3.0), `.venv`.
+  - Приёмка пройдена: `ruff check .` = `All checks passed!`, `sqlfluff lint clickhouse/ddl` = `All Finished!`. DDL из PRD 5.2 разбирается без ошибок парсинга.
+  - Исключения в `.sqlfluff`: CP03 и CP05 выключены (имена функций и типов ClickHouse регистрозависимы), выравнивание колонок в `CREATE TABLE` разрешено, `version` разрешён как идентификатор.
 - [ ] **1.2. ADR-0005 и ADR-0006, ревью `architect`** (~1 ч)
   - Приёмка: вердикт «принять» или «принять с правками», правки внесены; PRD 5.1/5.2 совпадает с ADR.
   - Закрывает: подготовку к FR-1, NFR-4, NFR-6.
