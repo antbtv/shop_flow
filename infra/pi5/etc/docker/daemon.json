@@ -1,0 +1,6 @@
+{
+  "data-root": "/mnt/data/docker",
+  "log-driver": "local",
+  "log-opts": { "max-size": "20m", "max-file": "3" },
+  "features": { "containerd-snapshotter": false }
+}

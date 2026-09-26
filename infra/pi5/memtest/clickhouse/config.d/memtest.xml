@@ -1,0 +1,23 @@
+<!-- Milestone 0.9: fit ClickHouse into ~2.5 GB on Pi5 and cut background writes to the HDD. -->
+<clickhouse>
+    <max_server_memory_usage>2147483648</max_server_memory_usage>
+    <mark_cache_size>268435456</mark_cache_size>
+    <index_mark_cache_size>67108864</index_mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <!-- background_pool_size is left at default: lowering it below the merge_tree
+         number_of_free_entries_in_pool_* thresholds makes the server refuse to start (code 36). -->
+
+    <trace_log remove="1"/>
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <text_log remove="1"/>
+    <query_thread_log remove="1"/>
+    <query_views_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_log>
+    <part_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </part_log>
+</clickhouse>

@@ -1,0 +1,13 @@
+# Secrets
+.env
+
+# Local Claude Code setup
+.claude/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
