@@ -121,7 +121,10 @@
   - `debezium/postgres-connector.json` (`topic.prefix=cdc`, `pgoutput`, 5 таблиц, пароль через `${env:...}`), `scripts/register-connector.sh` (идемпотентный `PUT`).
   - Приёмка: коннектор и задача `RUNNING`; после ручных INSERT/UPDATE/DELETE в `orders` в `cdc.public.orders` видны `op` `c`, `u` (с непустым `before`), `d`; есть все 5 топиков `cdc.public.*`; в `source` есть `lsn` и `ts_us`, у двух UPDATE одной строки в одной транзакции разные `lsn`.
   - Закрывает: FR-1.
-- [ ] **1.6. Генератор нагрузки** (~1 ч)
+- [x] **1.6. Генератор нагрузки** (~1 ч)
+  - Сделано (2026-09-26): `generator/model.py` (переходы статусов, данные клиентов, сезонность по часам, без psycopg), `generator/generate_orders.py` (psycopg 3, каждое действие отдельной транзакцией, `FOR UPDATE SKIP LOCKED`, пуассоновский поток, SIGTERM), `tests/test_generator.py` (13 тестов). Запуск через сервис compose `generator` (профиль `generator`, `python:3.12-slim`, `USER nobody`): секреты подставляет compose из `.env`, в командной строке их нет.
+  - Приёмка пройдена: `python3 -m pytest -q` = `13 passed` (системный Python и `.venv`); `ruff check .` чистый; прогон `--duration 60 --rate 5 --seed 1 --no-seasonality`: 282 действия, заказов 1 → 115, клиентов 1 → 16; статусы только `created/paid/shipped/delivered/cancelled`; в `cdc.public.orders` 116 `c`, 122 `u`, 1 `d`, все 122 перехода `before → after` допустимы по модели, пустых UPDATE нет.
+  - Заметка: засев `--customers` срабатывает только на пустой таблице; в прогоне уже был тестовый клиент из 1.5, поэтому засева не было.
   - `generator/generate_orders.py` (psycopg 3, `--rate`, `--duration`, `--seed`): засев `customers`, INSERT `orders`, переходы статусов, UPDATE адреса и сегмента; тесты `tests/test_generator.py`.
   - Приёмка: `python3 -m pytest -q` зелёный, `ruff check .` чистый; после прогона 60 с строки растут, статусы только допустимые.
   - Вне скоупа: `products`, `order_items`, `inventory` генерируем в M3.

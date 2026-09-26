@@ -109,6 +109,20 @@ services:
       retries: 30
       start_period: 30s
 
+  # Synthetic load (M1). Not started by plain `up`: use the profile, e.g.
+  #   docker compose -f docker-compose.laptop.yml --profile generator run --rm generator --duration 60
+  generator:
+    profiles: [generator]
+    build: ./generator
+    mem_limit: 256m
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+
 volumes:
   pg-data:
   kafka-data:
