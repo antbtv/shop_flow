@@ -104,7 +104,11 @@
   - Приёмка: `SHOW wal_level` = `logical`; `relreplident` = `f` у 5 таблиц; `pg_publication_tables` = 5 строк; `rolreplication` у `debezium` = `t`.
   - Закрывает: NFR-1, инвариант Postgres.
   - Риск: init-скрипты выполняются только на пустом томе.
-- [ ] **1.4. Kafka (KRaft) и Kafka Connect (Debezium)** (~1 ч)
+- [x] **1.4. Kafka (KRaft) и Kafka Connect (Debezium)** (~1 ч)
+  - Сделано (2026-09-26): `apache/kafka:4.3.1` (KRaft, один узел, статический кворум), `quay.io/debezium/connect:3.6.3.Final` (клиенты Kafka 4.3.0, Java 21). Listeners `INTERNAL://kafka:29092`, `EXTERNAL://localhost:9092`, `CONTROLLER://:9093`. `auto.create.topics.enable=false`. Пароль Debezium через `EnvVarConfigProvider` с `allowlist.pattern` только на `DEBEZIUM_PASSWORD`. `offset.flush.interval.ms` 10 с.
+  - Приёмка пройдена: все 3 сервиса `healthy`; `connector-plugins` содержит `io.debezium.connector.postgresql.PostgresConnector`; топики `connect-configs`, `connect-offsets`, `connect-status` с RF 1; у брокера `log.flush.interval.messages=1`, `log.retention.hours=168`, `log.retention.bytes=1073741824`, `log.segment.bytes=268435456`; 9092 и 8083 только на `127.0.0.1`.
+  - Память в покое: Connect 842 МиБ из 1,5 ГиБ, Kafka 415 МиБ из 1 ГиБ, Postgres 27 МиБ.
+  - Заметки: `retention.*` брокера на compact-топики Connect не действует. `watchtower` на ноутбуке работает с `--label-enable` и контейнеры `shopflow` не обновляет.
   - Kafka 4.x KRaft, внутренний и внешний listener, ретеншн по ADR-0005; Connect на образе Debezium 3.x, RF=1, `mem_limit`, `restart: unless-stopped`.
   - Приёмка: все сервисы `healthy`; `curl -s localhost:8083/connector-plugins` содержит `io.debezium.connector.postgresql.PostgresConnector`.
   - Закрывает: NFR-1.
