@@ -15,7 +15,9 @@ ufw protects host services only. Container ports (8123, 9000, 8080) are protecte
 `/etc/ufw/after.rules`. This is intentional (`iptables-restore` accepts several blocks for the same table);
 do not merge the `DOCKER-USER` lines into ufw's own block.
 
-## Check after any Docker or ufw restart
+## Check after changes to ufw or Docker
+
+Verified 2026-09-26: `systemctl restart docker` keeps the existing `DOCKER-USER` rules (Docker only creates the chain when it is missing).
 
 ```bash
 sudo iptables -S DOCKER-USER   # must contain the "! -s <LAN_CIDR> -i wlan0 -j DROP" rule
