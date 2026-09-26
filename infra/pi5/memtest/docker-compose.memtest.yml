@@ -1,6 +1,6 @@
 # Milestone 0.9: one-off memory test of ClickHouse + Airflow on Pi5 (NFR-7).
 # Not the real docker-compose.pi5.yml. Run on Pi5:
-#   PI5_HOST=... CLICKHOUSE_PASSWORD=... AIRFLOW_JWT_SECRET=... docker compose -f docker-compose.memtest.yml up -d
+#   PI5_HOST=... CLICKHOUSE_PASSWORD=... AIRFLOW_JWT_SECRET=... AIRFLOW_DB_PASSWORD=... docker compose -f docker-compose.memtest.yml up -d
 # Budget: sum of mem_limit = 5.5 GB, plus 0.5 GB reserved for the dashboard = 6 GB.
 
 x-airflow: &airflow
@@ -9,7 +9,7 @@ x-airflow: &airflow
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__PARALLELISM: "2"
     AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD}@airflow-db/airflow
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?set AIRFLOW_JWT_SECRET}
     AIRFLOW__API__WORKERS: "1"
@@ -43,7 +43,7 @@ services:
     mem_limit: 256m
     environment:
       POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow # internal network only, no published port
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
       POSTGRES_DB: airflow
     volumes:
       - airflow-db:/var/lib/postgresql/data

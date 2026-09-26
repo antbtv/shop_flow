@@ -166,7 +166,7 @@ ORDER BY (order_item_id);
 ```mermaid
 flowchart LR
     PG[(Postgres<br/>ноутбук)] --> CDC[Debezium<br/>ноутбук]
-    CDC --> MQ[Kafka/Redpanda<br/>ноутбук]
+    CDC --> MQ[Kafka KRaft<br/>ноутбук]
     MQ --> SPARK[Spark Structured<br/>Streaming — ноутбук]
     SPARK --> CH[(ClickHouse<br/>Pi5)]
     AF[Airflow<br/>Pi5] --> CH
@@ -193,7 +193,7 @@ flowchart LR
 | --- | --- | --- |
 | OLTP-источник | Postgres | Стандарт для симуляции продовой системы, поддерживает логическую репликацию для CDC |
 | CDC | Debezium | Индустриальный стандарт CDC из Postgres, частая тема на собеседованиях |
-| Брокер сообщений | Kafka **или** Redpanda | Буфер между CDC и обработкой. Redpanda — Kafka-совместимый однобинарник, заметно легче для ноутбука (без ZooKeeper); Kafka — более узнаваемое имя на собеседовании. Решить перед стартом Milestone 1 |
+| Брокер сообщений | Kafka (KRaft) | Буфер между CDC и обработкой. Выбран вместо Redpanda: узнаваемее на собеседовании, нативная экосистема Kafka Connect/Debezium; KRaft убирает ZooKeeper. См. `docs/adr/0001-message-broker-kafka.md` |
 | Потоковая обработка | Spark Structured Streaming | Продолжение опыта на Flink в X5 — второй streaming-движок в портфолио |
 | OLAP-хранилище | ClickHouse | Продолжает историю про интервью в SberData |
 | Оркестрация | Airflow | Знаком по прошлому опыту, стандарт индустрии для DAG-оркестрации |
@@ -203,7 +203,7 @@ flowchart LR
 
 ```
 retail-cdc-platform/
-├── docker-compose.laptop.yml   # Postgres, Debezium (Kafka Connect), Kafka/Redpanda
+├── docker-compose.laptop.yml   # Postgres, Debezium (Kafka Connect), Kafka
 ├── docker-compose.pi5.yml      # ClickHouse, Airflow
 ├── generator/
 │   └── generate_orders.py      # синтетический генератор нагрузки
@@ -236,7 +236,7 @@ POSTGRES_PASSWORD=changeme
 
 KAFKA_BOOTSTRAP=localhost:9092
 
-PI5_HOST=192.168.1.50
+PI5_HOST=192.168.0.151
 CLICKHOUSE_HTTP_PORT=8123
 CLICKHOUSE_NATIVE_PORT=9000
 CLICKHOUSE_USER=shopflow
@@ -256,7 +256,7 @@ TELEGRAM_CHAT_ID=
 - [ ] Проверить доступность Pi5 с ноутбука (ping, нужные порты)
 
 **Milestone 1 — MVP: связность**
-- [ ] `docker-compose.laptop.yml`: Postgres + Debezium (Kafka Connect) + Kafka/Redpanda
+- [ ] `docker-compose.laptop.yml`: Postgres + Debezium (Kafka Connect) + Kafka
 - [ ] Включить логическую репликацию в Postgres (`wal_level=logical`, `REPLICA IDENTITY FULL`)
 - [ ] Синтетический генератор — базовые insert/update в `orders`, `customers`
 - [ ] Проверить, что CDC-события доходят до топиков брокера
@@ -300,4 +300,3 @@ TELEGRAM_CHAT_ID=
 ## 13. Открытые вопросы
 
 - **Дашборд:** Grafana или Superset — не зафиксировано.
-- **Брокер сообщений:** Kafka или Redpanda — решить перед Milestone 1 (см. раздел 7).

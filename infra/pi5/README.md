@@ -80,7 +80,7 @@ Check from the laptop: a container published on `<PI5_IP>` is reachable; a host 
 
 ```bash
 scp -r infra/pi5/memtest pi5:~/          # on the laptop
-cd ~/memtest                             # on the Pi: create .env with PI5_HOST, CLICKHOUSE_PASSWORD, AIRFLOW_JWT_SECRET
+cd ~/memtest                             # on the Pi: create .env with PI5_HOST, CLICKHOUSE_PASSWORD, AIRFLOW_JWT_SECRET, AIRFLOW_DB_PASSWORD
 docker compose -f docker-compose.memtest.yml up -d && sleep 90 && ./loadtest.sh
 docker compose -f docker-compose.memtest.yml down -v
 ```
