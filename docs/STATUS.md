@@ -75,3 +75,56 @@
 `reviewer` (2026-09-26): блокеров нет. Исправлено: решение по Kafka в PRD (разделы 6, 7, 8, 10, 13), пример IP, пароль метабазы в memtest из env, пояснения к `after.rules`. Не подтвердилось: потеря `DOCKER-USER` при `systemctl restart docker` (проверено, правила сохраняются).
 
 **Milestone 0 завершён 2026-09-26.**
+
+## Milestone 1: MVP, связность
+
+Ветка: `milestone-1`. План подтверждён 2026-09-26. Оценка ~11 ч. Шаги на Pi5 выполняет пользователь.
+
+До кода `architect` проверяет: A) ADR-0005, контракт CDC (конвертер, decimal, tombstones, REPLICA IDENTITY FULL на все 5 таблиц, роль и публикация Debezium, `max_slot_wal_keep_size`, ретеншн Kafka при 26 ГБ свободного диска ноутбука, listeners под Spark в M2); B) ADR-0006, поправки к схеме ClickHouse 5.2 (позиция события в `raw_events`, версия SCD2 отдельно от `valid_from`, источник `version` в `fact_orders`); C) деплой на Pi5 (`rsync`, отдельный `.env`, пользователи ClickHouse).
+
+- [x] **1.0. Ветки** (~10 мин)
+  - Сделано (2026-09-26): `milestone-0` влит в `master` (PR #1), ветка `milestone-1` от `master`.
+- [ ] **1.1. Python-инструменты** (~20 мин)
+  - `pyproject.toml` (ruff, pytest), `.sqlfluff` (диалект `clickhouse`), `requirements-dev.txt`, `.venv`.
+  - Приёмка: `ruff check .` и `sqlfluff lint clickhouse/ddl` запускаются без ошибок конфигурации.
+  - Риск: неполная поддержка ClickHouse в sqlfluff, исключения фиксируем в `.sqlfluff`.
+- [ ] **1.2. ADR-0005 и ADR-0006, ревью `architect`** (~1 ч)
+  - Приёмка: вердикт «принять» или «принять с правками», правки внесены; PRD 5.1/5.2 совпадает с ADR.
+  - Закрывает: подготовку к FR-1, NFR-4, NFR-6.
+- [ ] **1.3. Postgres в `docker-compose.laptop.yml`** (~45 мин)
+  - Postgres 17, `wal_level=logical`, `max_slot_wal_keep_size`, порт на `127.0.0.1`; `postgres/init/001_schema.sql`: DDL 5.1, REPLICA IDENTITY, публикация на 5 таблиц, роль `debezium` (`DEBEZIUM_PASSWORD` в `.env.example`).
+  - Приёмка: `SHOW wal_level` = `logical`; `relreplident` = `f` у 5 таблиц; `pg_publication_tables` = 5 строк; `rolreplication` у `debezium` = `t`.
+  - Закрывает: NFR-1, инвариант Postgres.
+  - Риск: init-скрипты выполняются только на пустом томе.
+- [ ] **1.4. Kafka (KRaft) и Kafka Connect (Debezium)** (~1 ч)
+  - Kafka 4.x KRaft, внутренний и внешний listener, ретеншн по ADR-0005; Connect на образе Debezium 3.x, RF=1, `mem_limit`, `restart: unless-stopped`.
+  - Приёмка: все сервисы `healthy`; `curl -s localhost:8083/connector-plugins` содержит `io.debezium.connector.postgresql.PostgresConnector`.
+  - Закрывает: NFR-1.
+  - Риск: `advertised.listeners` для хоста и контейнеров.
+- [ ] **1.5. Регистрация коннектора Debezium** (~45 мин)
+  - `debezium/postgres-connector.json` (`topic.prefix=cdc`, `pgoutput`, 5 таблиц, пароль через `${env:...}`), `scripts/register-connector.sh` (идемпотентный `PUT`).
+  - Приёмка: коннектор и задача `RUNNING`; после ручных INSERT/UPDATE/DELETE в `orders` в `cdc.public.orders` видны `op` `c`, `u` (с непустым `before`), `d`; есть все 5 топиков `cdc.public.*`.
+  - Закрывает: FR-1.
+- [ ] **1.6. Генератор нагрузки** (~1 ч)
+  - `generator/generate_orders.py` (psycopg 3, `--rate`, `--duration`, `--seed`): засев `customers`, INSERT `orders`, переходы статусов, UPDATE адреса и сегмента; тесты `tests/test_generator.py`.
+  - Приёмка: `python3 -m pytest -q` зелёный, `ruff check .` чистый; после прогона 60 с строки растут, статусы только допустимые.
+  - Вне скоупа: `products`, `order_items`, `inventory` генерируем в M3.
+- [ ] **1.7. Сквозная проверка CDC и перезапуск ноутбука** (~1 ч)
+  - `scripts/check_cdc_counts.sh`; остановка `connect` на 2 мин под нагрузкой; `down && up -d` без `-v`.
+  - Приёмка: число событий `op=c` совпадает с `count(*)` в Postgres; нового снапшота (`op=r`) нет; слот `active=t`, WAL в слоте после догона в пределах МБ.
+  - Закрывает: FR-1, NFR-6 (сторона ноутбука).
+- [ ] **1.8. DDL ClickHouse** (~45 мин)
+  - `clickhouse/ddl/000_database.sql` … `004_fact_orders.sql` по ADR-0006, `IF NOT EXISTS`; `scripts/apply-ddl.sh` (HTTP, креды из env, без вывода).
+  - Приёмка: `sqlfluff lint clickhouse/ddl` чистый.
+  - Закрывает: NFR-4, NFR-5.
+- [ ] **1.9. `docker-compose.pi5.yml`: только ClickHouse** (~1 ч, `/deploy-pi5`)
+  - ClickHouse 25.8, `mem_limit` 2816m, `clickhouse/config.d/shopflow.xml` по ADR-0004, профиль с `max_memory_usage`, порты на `${PI5_HOST}`. Доставка `rsync` в `~/shopflow`; стенд memtest остановить (`down` без `-v`).
+  - Приёмка: `config -q` проходит; `curl -s http://$PI5_HOST:8123/ping` = `Ok.`; `ss -tlnp` показывает 8123/9000 только на `$PI5_HOST`; лимит 2816m; после reboot отвечает.
+  - Закрывает: NFR-2, NFR-7, PRD 6.1, ADR-0003, ADR-0004.
+- [ ] **1.10. DDL на Pi5 и ручная заливка тестовых событий** (~1 ч)
+  - `apply-ddl.sh` дважды; `scripts/load_sample_events.sh` (одноразовый, в M2 заменит Spark): события из `cdc.public.*` в `raw_events` через `JSONEachRow`; две версии одной строки в `fact_orders`.
+  - Приёмка: 4 таблицы с ожидаемыми движками; `SELECT topic, op, count() FROM raw_events GROUP BY ALL` совпадает с выгрузкой; TTL 30 дней в `SHOW CREATE`; `FINAL` по `order_item_id = 1` даёт одну строку со старшей версией.
+  - Закрывает: пункт M1 про ClickHouse, NFR-4 (smoke), FR-2 (сеть ноутбук → Pi5).
+- [ ] **1.11. Итоги, ревью, закрытие** (~45 мин)
+  - `docs/runbook-laptop.md`, STATUS, `reviewer`, PR `milestone-1` → `master`.
+  - Приёмка: блокеров нет; pytest, ruff, sqlfluff зелёные; доказательства в STATUS.
