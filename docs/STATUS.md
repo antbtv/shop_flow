@@ -1,6 +1,6 @@
 # Статус ShopFlow
 
-Обновлено: 2026-09-25
+Обновлено: 2026-09-26
 
 ## Решения
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
@@ -21,10 +21,10 @@
 - [x] **0.2. `.env.example`** (~20 мин)
   - Переменные раздела 9 PRD + креды ClickHouse и Airflow; `LAPTOP_HOST` закомментирован до M4. PRD (разделы 8, 9) обновлён.
   - Приёмка пройдена: все переменные раздела 9 есть в `.env.example`; `git ls-files .env` пусто.
-- [ ] **0.3. Базовая настройка ОС Pi5** (~40 мин)
+- [x] **0.3. Базовая настройка ОС Pi5** (~40 мин)
   - Отдельный ключ ed25519, алиас `pi5` в `~/.ssh/config`, `sshd_config.d/00-shopflow.conf` (пароли и root выключены), `apt full-upgrade`.
   - Решить судьбу `unattended-upgrades`: выключить или оставить без автоматического reboot (автономность ≥ 2 недель).
-  - Сделано (2026-09-25): вход по ключу, пароль отклоняется (`Permission denied (publickey)`), NTP синхронизирован на Pi5 и ноутбуке. Осталось: перезагрузка после `full-upgrade` (совместим с 0.4).
+  - Сделано (2026-09-25): вход по ключу, пароль отклоняется (`Permission denied (publickey)`), NTP синхронизирован на Pi5 и ноутбуке. Перезагрузка после `full-upgrade` выполнена в 0.4.
   - `unattended-upgrades` не установлен; предложено оставить так и обновлять вручную (Pi5 не виден из интернета, автономный прогон без неожиданных перезагрузок). Принято 2026-09-25.
   - Приёмка: `ssh pi5 'uname -m; free -m; timedatectl show -p NTPSynchronized'` выводит `aarch64`, ~8 ГБ и `yes`; `ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password pi5` получает `Permission denied`; `timedatectl` на ноутбуке тоже синхронизирован (нужно для замера NFR-3).
   - Закрывает: NFR-2.
