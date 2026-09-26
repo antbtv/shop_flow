@@ -1,0 +1,37 @@
+# Laptop stack (NFR-1): Postgres -> Debezium (Kafka Connect) -> Kafka. Decisions: docs/adr/0005-cdc-contract.md.
+# Ports are published on 127.0.0.1 only.
+name: shopflow
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    mem_limit: 1g
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+      # Caps WAL held by an inactive slot so it cannot fill the laptop disk (ADR-0005).
+      - -c
+      - max_slot_wal_keep_size=4GB
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:?set DEBEZIUM_PASSWORD}
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  pg-data:

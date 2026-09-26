@@ -96,7 +96,10 @@
   - Главные правки: `fact_orders` из двух топиков терял бы обновления (LSN изменения не сравним между таблицами), заменён на `stg_orders` + `stg_order_items`; правила SCD2 для нескольких UPDATE в одной транзакции; `source_lsn` в ключе `raw_events`; fsync Kafka; явные `publication.name`, `slot.name`, KRaft RF 1; `rsync` без `.env`, `name: shopflow`.
   - Проверить на реальных событиях (1.5, 1.7): разные `source.lsn` у двух UPDATE одной строки в одной транзакции; есть `source.ts_us`; одинаковый `source.lsn` у `op=r`; сдвигается ли слот при простое генератора.
   - Закрывает: подготовку к FR-1, NFR-4, NFR-6.
-- [ ] **1.3. Postgres в `docker-compose.laptop.yml`** (~45 мин)
+- [x] **1.3. Postgres в `docker-compose.laptop.yml`** (~45 мин)
+  - Сделано (2026-09-26): `docker-compose.laptop.yml` (`name: shopflow`, `postgres:17-bookworm`, `mem_limit` 1g), `postgres/init/001_schema.sql`, `postgres/init/002_debezium_role.sh` (пароль через переменную psql), `DEBEZIUM_PASSWORD` в `.env.example`.
+  - Приёмка пройдена: `wal_level` = `logical`, `max_slot_wal_keep_size` = `4GB`; `relreplident` = `f` у 5 таблиц; `pg_publication_tables` = 5; `debezium`: `rolreplication=t`, `rolsuper=f`, только `SELECT` на 5 таблиц; вход по паролю через TCP и `IDENTIFY_SYSTEM` проходят, INSERT даёт `permission denied`; `ss -tlnp`: 5432 только на `127.0.0.1`.
+  - Окружение ноутбука: пользователь добавлен в группу `docker`, до перелогина Claude запускает docker через `sg docker -c`.
   - Postgres 17, `wal_level=logical`, `max_slot_wal_keep_size`, порт на `127.0.0.1`; `postgres/init/001_schema.sql`: DDL 5.1, REPLICA IDENTITY, публикация на 5 таблиц, роль `debezium` (`DEBEZIUM_PASSWORD` в `.env.example`).
   - Приёмка: `SHOW wal_level` = `logical`; `relreplident` = `f` у 5 таблиц; `pg_publication_tables` = 5 строк; `rolreplication` у `debezium` = `t`.
   - Закрывает: NFR-1, инвариант Postgres.
