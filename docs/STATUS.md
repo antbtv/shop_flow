@@ -113,7 +113,11 @@
   - Приёмка: все сервисы `healthy`; `curl -s localhost:8083/connector-plugins` содержит `io.debezium.connector.postgresql.PostgresConnector`.
   - Закрывает: NFR-1.
   - Риск: `advertised.listeners` для хоста и контейнеров.
-- [ ] **1.5. Регистрация коннектора Debezium** (~45 мин)
+- [x] **1.5. Регистрация коннектора Debezium** (~45 мин)
+  - Сделано (2026-09-26): `debezium/postgres-connector.json` (в git только `${env:DEBEZIUM_PASSWORD}` и `${env:POSTGRES_DB}`, allowlist провайдера на эти две переменные), `scripts/register-connector.sh` (идемпотентный `PUT`, ждёт `RUNNING`, при сбое печатает trace).
+  - Приёмка пройдена: два запуска подряд дают `shopflow-pg: RUNNING RUNNING`; REST `/config` показывает плейсхолдеры, а не секреты; созданы `cdc.public.{customers,products,orders,order_items,inventory}` и `__debezium-heartbeat.cdc`; в `cdc.public.orders` `c`, `u` с `before`, `d` с полным `before`, tombstone нет; ключ `{"order_id":1}`; `price_at_order` = `"19.99"`; `timestamptz` в ISO UTC; слот `shopflow_debezium` `active`, `wal_status=reserved`.
+  - Проверки ADR-0006: в транзакции `txId 773` два UPDATE одной строки имеют разные `source.lsn` (26741552 < 26741704) и одинаковый `source.ts_us`; поле `source.ts_us` есть. Одинаковый LSN у `op=r` не проверен: при снапшоте таблицы были пусты.
+  - Урок: в Kafka 4.3 `kafka-console-consumer.sh --property` устарел и пишет предупреждение в stdout, использовать `--formatter-property`.
   - `debezium/postgres-connector.json` (`topic.prefix=cdc`, `pgoutput`, 5 таблиц, пароль через `${env:...}`), `scripts/register-connector.sh` (идемпотентный `PUT`).
   - Приёмка: коннектор и задача `RUNNING`; после ручных INSERT/UPDATE/DELETE в `orders` в `cdc.public.orders` видны `op` `c`, `u` (с непустым `before`), `d`; есть все 5 топиков `cdc.public.*`; в `source` есть `lsn` и `ts_us`, у двух UPDATE одной строки в одной транзакции разные `lsn`.
   - Закрывает: FR-1.

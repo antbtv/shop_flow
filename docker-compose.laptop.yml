@@ -94,11 +94,12 @@ services:
       # Commit offsets (and confirm the slot LSN) every 10 s: shorter replay after a crash.
       OFFSET_FLUSH_INTERVAL_MS: 10000
       HEAP_OPTS: -Xms512m -Xmx768m
-      # Connector configs reference ${env:DEBEZIUM_PASSWORD}; only this variable is readable.
+      # Connector configs reference ${env:...}; only the variables below are readable.
       CONNECT_CONFIG_PROVIDERS: env
       CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
-      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: ^DEBEZIUM_PASSWORD$$
+      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: ^(DEBEZIUM_PASSWORD|POSTGRES_DB)$$
       DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:?set DEBEZIUM_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
     ports:
       - "127.0.0.1:8083:8083"
     healthcheck:
