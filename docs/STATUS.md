@@ -9,6 +9,9 @@
 - Дашборд: Grafana или Superset, не решено (PRD, раздел 13). Допущение: на Pi5 резерв 0,5 ГБ под Grafana; Superset, если выберем, запускается на ноутбуке.
 - Память Pi5: жёсткие `mem_limit`, LocalExecutor, урезанный ClickHouse, см. `docs/adr/0004-pi5-memory-budget.md`
 - Доступ Pi5 → Postgres на ноутбуке (для FR-8): решаем в Milestone 4 отдельным ADR.
+- CDC: полный конверт Debezium в JSON без схем, 1 партиция на топик, fsync Kafka на каждое сообщение, REPLICA IDENTITY FULL на 5 таблицах, см. `docs/adr/0005-cdc-contract.md`
+- ClickHouse: версия = `source.lsn` только для таблиц «одна строка Postgres»; `raw_events` по позиции Kafka; `stg_orders` + `stg_order_items`, `fact_orders` поверх них в M3, см. `docs/adr/0006-clickhouse-schema-idempotency.md`
+- Деплой Pi5: `rsync` по явному списку путей без `.env`, отдельный `.env` на Pi5, compose `name: shopflow`, см. `docs/adr/0007-pi5-deploy.md`
 - Репозиторий: `docs/` и PRD в git; `.claude/`, `CLAUDE.md`, `.env` локально.
 
 ## Milestone 0: подготовка окружения
@@ -88,8 +91,10 @@
   - Сделано (2026-09-26): `pyproject.toml` (ruff, pytest), `.sqlfluff` (диалект `clickhouse`), `requirements-dev.txt` (pytest 9.1.1, ruff 0.16.9, sqlfluff 4.3.0), `.venv`.
   - Приёмка пройдена: `ruff check .` = `All checks passed!`, `sqlfluff lint clickhouse/ddl` = `All Finished!`. DDL из PRD 5.2 разбирается без ошибок парсинга.
   - Исключения в `.sqlfluff`: CP03 и CP05 выключены (имена функций и типов ClickHouse регистрозависимы), выравнивание колонок в `CREATE TABLE` разрешено, `version` разрешён как идентификатор.
-- [ ] **1.2. ADR-0005 и ADR-0006, ревью `architect`** (~1 ч)
-  - Приёмка: вердикт «принять» или «принять с правками», правки внесены; PRD 5.1/5.2 совпадает с ADR.
+- [x] **1.2. ADR-0005, ADR-0006, ADR-0007, ревью `architect`** (~1 ч)
+  - Сделано (2026-09-26): деплой вынесен в отдельный ADR-0007. `architect`: все три «принять с правками», правки внесены. PRD 5.1 (REPLICA IDENTITY на 5 таблиц), 5.2 (новая схема) и раздел 10 обновлены.
+  - Главные правки: `fact_orders` из двух топиков терял бы обновления (LSN изменения не сравним между таблицами), заменён на `stg_orders` + `stg_order_items`; правила SCD2 для нескольких UPDATE в одной транзакции; `source_lsn` в ключе `raw_events`; fsync Kafka; явные `publication.name`, `slot.name`, KRaft RF 1; `rsync` без `.env`, `name: shopflow`.
+  - Проверить на реальных событиях (1.5, 1.7): разные `source.lsn` у двух UPDATE одной строки в одной транзакции; есть `source.ts_us`; одинаковый `source.lsn` у `op=r`; сдвигается ли слот при простое генератора.
   - Закрывает: подготовку к FR-1, NFR-4, NFR-6.
 - [ ] **1.3. Postgres в `docker-compose.laptop.yml`** (~45 мин)
   - Postgres 17, `wal_level=logical`, `max_slot_wal_keep_size`, порт на `127.0.0.1`; `postgres/init/001_schema.sql`: DDL 5.1, REPLICA IDENTITY, публикация на 5 таблиц, роль `debezium` (`DEBEZIUM_PASSWORD` в `.env.example`).
@@ -103,7 +108,7 @@
   - Риск: `advertised.listeners` для хоста и контейнеров.
 - [ ] **1.5. Регистрация коннектора Debezium** (~45 мин)
   - `debezium/postgres-connector.json` (`topic.prefix=cdc`, `pgoutput`, 5 таблиц, пароль через `${env:...}`), `scripts/register-connector.sh` (идемпотентный `PUT`).
-  - Приёмка: коннектор и задача `RUNNING`; после ручных INSERT/UPDATE/DELETE в `orders` в `cdc.public.orders` видны `op` `c`, `u` (с непустым `before`), `d`; есть все 5 топиков `cdc.public.*`.
+  - Приёмка: коннектор и задача `RUNNING`; после ручных INSERT/UPDATE/DELETE в `orders` в `cdc.public.orders` видны `op` `c`, `u` (с непустым `before`), `d`; есть все 5 топиков `cdc.public.*`; в `source` есть `lsn` и `ts_us`, у двух UPDATE одной строки в одной транзакции разные `lsn`.
   - Закрывает: FR-1.
 - [ ] **1.6. Генератор нагрузки** (~1 ч)
   - `generator/generate_orders.py` (psycopg 3, `--rate`, `--duration`, `--seed`): засев `customers`, INSERT `orders`, переходы статусов, UPDATE адреса и сегмента; тесты `tests/test_generator.py`.
@@ -111,19 +116,19 @@
   - Вне скоупа: `products`, `order_items`, `inventory` генерируем в M3.
 - [ ] **1.7. Сквозная проверка CDC и перезапуск ноутбука** (~1 ч)
   - `scripts/check_cdc_counts.sh`; остановка `connect` на 2 мин под нагрузкой; `down && up -d` без `-v`.
-  - Приёмка: число событий `op=c` совпадает с `count(*)` в Postgres; нового снапшота (`op=r`) нет; слот `active=t`, WAL в слоте после догона в пределах МБ.
+  - Приёмка: число различных ключей среди `op in (c, r)` без удалённых совпадает с `count(*)` в Postgres (дубли после аварийной остановки Connect допустимы); нового снапшота (`op=r`) нет; слот `active=t`, WAL в слоте после догона в пределах МБ, в том числе после 10 мин простоя генератора (иначе `heartbeat.action.query`).
   - Закрывает: FR-1, NFR-6 (сторона ноутбука).
 - [ ] **1.8. DDL ClickHouse** (~45 мин)
-  - `clickhouse/ddl/000_database.sql` … `004_fact_orders.sql` по ADR-0006, `IF NOT EXISTS`; `scripts/apply-ddl.sh` (HTTP, креды из env, без вывода).
+  - `clickhouse/ddl/000_database.sql` … `005_dim_products.sql` по ADR-0006 (`raw_events`, `stg_orders`, `stg_order_items`, `dim_customers`, `dim_products`; `fact_orders` в M3), `IF NOT EXISTS`; `scripts/apply-ddl.sh` (HTTP, креды в заголовках `X-ClickHouse-User`/`X-ClickHouse-Key`, без вывода).
   - Приёмка: `sqlfluff lint clickhouse/ddl` чистый.
   - Закрывает: NFR-4, NFR-5.
 - [ ] **1.9. `docker-compose.pi5.yml`: только ClickHouse** (~1 ч, `/deploy-pi5`)
-  - ClickHouse 25.8, `mem_limit` 2816m, `clickhouse/config.d/shopflow.xml` по ADR-0004, профиль с `max_memory_usage`, порты на `${PI5_HOST}`. Доставка `rsync` в `~/shopflow`; стенд memtest остановить (`down` без `-v`).
-  - Приёмка: `config -q` проходит; `curl -s http://$PI5_HOST:8123/ping` = `Ok.`; `ss -tlnp` показывает 8123/9000 только на `$PI5_HOST`; лимит 2816m; после reboot отвечает.
-  - Закрывает: NFR-2, NFR-7, PRD 6.1, ADR-0003, ADR-0004.
+  - ClickHouse 25.8, `name: shopflow`, `mem_limit` 2816m, `clickhouse/config.d/shopflow.xml` по ADR-0004, профиль с `max_memory_usage`, `default` без сетевого доступа, порты на `${PI5_HOST}`. Доставка `rsync` по ADR-0007; стенд memtest остановить (`down` без `-v`), проверить `docker volume ls`.
+  - Приёмка: `config -q` проходит; `curl -s http://$PI5_HOST:8123/ping` = `Ok.`; `ss -tlnp` показывает 8123/9000 только на `$PI5_HOST`; лимит 2816m; `system.users` без сетевого `default`; `.env` на Pi5 `600`; после reboot отвечает.
+  - Закрывает: NFR-2, NFR-7, PRD 6.1, ADR-0003, ADR-0004, ADR-0007.
 - [ ] **1.10. DDL на Pi5 и ручная заливка тестовых событий** (~1 ч)
-  - `apply-ddl.sh` дважды; `scripts/load_sample_events.sh` (одноразовый, в M2 заменит Spark): события из `cdc.public.*` в `raw_events` через `JSONEachRow`; две версии одной строки в `fact_orders`.
-  - Приёмка: 4 таблицы с ожидаемыми движками; `SELECT topic, op, count() FROM raw_events GROUP BY ALL` совпадает с выгрузкой; TTL 30 дней в `SHOW CREATE`; `FINAL` по `order_item_id = 1` даёт одну строку со старшей версией.
+  - `apply-ddl.sh` дважды; `scripts/load_sample_events.sh` (одноразовый, в M2 заменит Spark): события из `cdc.public.*` в `raw_events` через `JSONEachRow`, загрузка дважды; вручную две версии одной строки и удаление в `stg_order_items`.
+  - Приёмка: 5 таблиц с ожидаемыми движками; `SELECT topic, op, count() FROM raw_events FINAL GROUP BY ALL` совпадает с выгрузкой после двойной загрузки; TTL 30 дней в `SHOW CREATE`; `FINAL` по `order_item_id` даёт одну строку со старшей версией, строка с `is_deleted = 1` исчезает.
   - Закрывает: пункт M1 про ClickHouse, NFR-4 (smoke), FR-2 (сеть ноутбук → Pi5).
 - [ ] **1.11. Итоги, ревью, закрытие** (~45 мин)
   - `docs/runbook-laptop.md`, STATUS, `reviewer`, PR `milestone-1` → `master`.
