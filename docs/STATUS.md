@@ -206,7 +206,13 @@
   - `stg_order_items.quantity` → `Int32` (DDL 003, PRD 5.2); на Pi5 пустую таблицу пересоздать.
   - Приёмка: `SHOW GRANTS FOR spark_writer` только `INSERT` на 3 таблицы; `INSERT` проходит, `DROP`/`CREATE` дают `ACCESS_DENIED`; пароля нет в `git grep` и `system.query_log`; `quantity` = `Int32` в `DESCRIBE`.
   - Закрывает: условие входа M2 (ADR-0007).
-- [ ] **2.4. Spike: запись из Spark в ClickHouse на Pi5** (~1 ч)
+- [x] **2.4. Spike: запись из Spark в ClickHouse на Pi5** (~1 ч)
+  - Сделано (2026-09-27): `spark-jobs/shopflow_stream/sink.py` (каталог `clickhouse` из env: `spark_writer`, `connection_timeout` 10 с, `socket_timeout` 120 с), `spark-jobs/spike_clickhouse_write.py` (случаи `raw`, `raw_ingested`, `stg`, `null_uint`, `negative_uint`). В сервис `spark` переданы `PI5_HOST`, `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_SPARK_PASSWORD`. Коннектор 0.10.1 оставлен, запасной путь не понадобился.
+  - Права коннектора (по ошибкам `ACCESS_DENIED` и строкам `FROM system.*` в jar): `SELECT` на `system.clusters`, `system.macros` и на 3 целевые таблицы (`loadTable` читает схему через `SELECT`). Добавлены в `create-ch-users.sh`, итог `SHOW GRANTS`: `SELECT, INSERT` на 3 таблицы, `SELECT` на `system.clusters`, `system.macros`.
+  - Приёмка пройдена: `raw` 3 строки за 2,9 с; `2026-09-27T12:34:56.123456Z` → `12:34:56.123`, `23:59:59.999Z` в партиции 20260927, `00:00:00Z` в 20260928; LSN `9007199254740993` без потерь; `ingested_at` по DEFAULT и из Spark `current_timestamp()` оба работают; `stg`: `quantity` −2 в `Int32`, `price_at_order` 19.99 и 0.01. Тестовые строки удалены (0), `raw_events` 1984 уникальных позиции, как после 1.10.
+  - Находка: коннектор не проверяет значения: `NULL` в `UInt64` → `0`, `-1` → `18446744073709551615`, без ошибки. Проверки fail-fast и карантина обязательны в Spark (ADR-0008 дополнен).
+  - Таймауты: хост без ответа на SYN (`10.255.255.1`) → ошибка через 40 с (4 попытки по 10 с); слушатель, который молчит (`busybox nc` в сети compose) → ошибка через 120 с (1 попытка, ошибку чтения клиент не повторяет). Зависания нет. Сценарий с DROP в `DOCKER-USER` на Pi5 остаётся в 2.9 B2.
+  - Урок: хук `guard-bash` блокирует слова `DROP`/`TRUNCATE` в любом тексте команды, правки с ними Claude делает через Edit.
   - 3 строки с `topic='test.spike'` в `raw_events` через коннектор, затем удалить. Версия коннектора 0.10.1 или 0.10.0, клиент по POM коннектора.
   - Приёмка: `count()` = 3, типы `DateTime64(3)` (из ISO с микросекундами и `Z`), `UInt64`, `Decimal(10,2)` без искажений; поведение null и отрицательного значения в `UInt*` записано; права коннектора по `system.query_log` (нужен ли `SELECT`); имена опций таймаутов найдены, при DROP-правиле на Pi5 вставка падает по таймауту, а не висит; после очистки 0.
   - Риск: главное неизвестное. Запасные варианты: JDBC, затем `foreachPartition` + HTTP `JSONEachRow`, правка ADR-0008.

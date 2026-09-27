@@ -133,6 +133,9 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
       TZ: UTC
+      PI5_HOST: ${PI5_HOST:?set PI5_HOST}
+      CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT:-8123}
+      CLICKHOUSE_SPARK_PASSWORD: ${CLICKHOUSE_SPARK_PASSWORD:?set CLICKHOUSE_SPARK_PASSWORD}
     volumes:
       # Never remove with `down -v`: losing it replays Kafka from the earliest offset (ADR-0008).
       - spark-checkpoint:/checkpoints

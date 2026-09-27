@@ -27,13 +27,21 @@ statements=(
     "GRANT INSERT ON shopflow.raw_events TO spark_writer"
     "GRANT INSERT ON shopflow.stg_orders TO spark_writer"
     "GRANT INSERT ON shopflow.stg_order_items TO spark_writer"
+    # The connector reads the table schema with SELECT and the cluster topology when the
+    # catalog loads (spike 2.4). system.tables/columns/databases are filtered by grants.
+    "GRANT SELECT ON shopflow.raw_events TO spark_writer"
+    "GRANT SELECT ON shopflow.stg_orders TO spark_writer"
+    "GRANT SELECT ON shopflow.stg_order_items TO spark_writer"
+    "GRANT SELECT ON system.clusters TO spark_writer"
+    "GRANT SELECT ON system.macros TO spark_writer"
 )
 for q in "${statements[@]}"; do
-    # Print the statement kind only: the hash stays out of terminal logs.
+    # Print the first words only: the hash stays out of terminal logs.
+    label=$(cut -d' ' -f1-4 <<<"$q")
     if out=$(ch_curl --data-binary "$q" "$CLICKHOUSE_URL/" 2>&1); then
-        echo "ok: ${q%% spark_writer*} spark_writer"
+        echo "ok: $label"
     else
-        echo "FAILED: ${q%% spark_writer*}: ${out//$hash/<hash>}" >&2
+        echo "FAILED: $label: ${out//$hash/<hash>}" >&2
         exit 1
     fi
 done
