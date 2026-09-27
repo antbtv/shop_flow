@@ -155,7 +155,11 @@
   - ClickHouse 25.8, `name: shopflow`, `mem_limit` 2816m, `clickhouse/config.d/shopflow.xml` по ADR-0004, профиль с `max_memory_usage`, `default` без сетевого доступа, порты на `${PI5_HOST}`. Доставка `rsync` по ADR-0007; стенд memtest остановить (`down` без `-v`), проверить `docker volume ls`.
   - Приёмка: `config -q` проходит; `curl -s http://$PI5_HOST:8123/ping` = `Ok.`; `ss -tlnp` показывает 8123/9000 только на `$PI5_HOST`; лимит 2816m; `system.users` без сетевого `default`; `.env` на Pi5 `600`; после reboot отвечает.
   - Закрывает: NFR-2, NFR-7, PRD 6.1, ADR-0003, ADR-0004, ADR-0007.
-- [ ] **1.10. DDL на Pi5 и ручная заливка тестовых событий** (~1 ч)
+- [x] **1.10. DDL на Pi5 и ручная заливка тестовых событий** (~1 ч)
+  - Сделано (2026-09-27): DDL применён в 1.9. `scripts/load_sample_events.sh` (одноразовый, в M2 заменит Spark): консьюмер печатает партицию, оффсет, ключ и значение, `jq` собирает `JSONEachRow`, ClickHouse сам извлекает `source.lsn`, `source.ts_ms` и `op` из конверта в `INSERT ... SELECT FROM input(...)`.
+  - Приёмка пройдена: первая заливка 1984 события (`customers` 332, `orders` 1649, `products`, `order_items`, `inventory` по 1), распределение `op` совпадает со сверкой 1.7, нулевых LSN нет, `event_time` 18:53–19:06 UTC 2026-09-26; транзакция 773 из 1.5 видна как оффсеты 2 и 3 с LSN 26741552 и 26741704. Повторная заливка тех же событий: `FINAL` = 1984 = число различных позиций Kafka, без `FINAL` 3636 (часть дублей уже схлопнута фоновым слиянием). TTL 30 дней в `SHOW CREATE` (1.8).
+  - `stg_order_items` на Pi5: версия 150 после 200 проигрывает (`quantity` 5, версия 200), строка с `is_deleted = 1` скрыта `FINAL`; тестовые строки (ключи ≥ 900000000) удалены.
+  - Реальные события оставлены в `raw_events`: Spark в M2 при чтении с начала запишет те же позиции, и они схлопнутся (ещё одна проверка NFR-4).
   - `apply-ddl.sh` дважды; `scripts/load_sample_events.sh` (одноразовый, в M2 заменит Spark): события из `cdc.public.*` в `raw_events` через `JSONEachRow`, загрузка дважды; вручную две версии одной строки и удаление в `stg_order_items`.
   - Приёмка: 5 таблиц с ожидаемыми движками; `SELECT topic, op, count() FROM raw_events FINAL GROUP BY ALL` совпадает с выгрузкой после двойной загрузки; TTL 30 дней в `SHOW CREATE`; `FINAL` по `order_item_id` даёт одну строку со старшей версией, строка с `is_deleted = 1` исчезает.
   - Закрывает: пункт M1 про ClickHouse, NFR-4 (smoke), FR-2 (сеть ноутбук → Pi5).
