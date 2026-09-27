@@ -123,11 +123,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
 
-  # Streaming job Kafka -> ClickHouse on Pi5 (ADR-0008). Behind a profile until the job exists (2.6).
+  # Streaming job Kafka -> ClickHouse on Pi5 (ADR-0008). Waits for ClickHouse /ping, then runs
+  # the query; on failure the process exits and Docker restarts it from the checkpoint.
   spark:
-    profiles: [spark]
     build: ./spark-jobs
+    entrypoint: ["/opt/shopflow/entrypoint.sh"]
     mem_limit: 2g
+    restart: unless-stopped
+    # Let an in-flight batch finish its insert before SIGKILL.
+    stop_grace_period: 60s
     depends_on:
       kafka: { condition: service_healthy }
     environment:
@@ -141,6 +145,14 @@ services:
       - spark-checkpoint:/checkpoints
     ports:
       - "127.0.0.1:4040:4040"
+    # Observation only: Docker does not restart unhealthy containers, the in-process watchdog does.
+    # The marker is touched on every batch and every idle tick (about 10 s).
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$$(find /tmp/shopflow-alive -mmin -3 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
     # A restart loop must not fill the laptop disk with logs.
     logging:
       driver: json-file

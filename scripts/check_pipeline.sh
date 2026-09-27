@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Kafka -> ClickHouse check (ADR-0008). For each CDC topic, every Kafka position in
+# [earliest, latest) must be in raw_events exactly once after dedup (uniqExact, no FINAL).
+# Also prints the ingest lag of the last 10 minutes.
+# Usage: scripts/check_pipeline.sh   Exit 1 on any mismatch.
+# Exact only when the job has caught up: stop the generator and wait one trigger (30 s).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+COMPOSE=(docker compose -f docker-compose.laptop.yml)
+TABLES=(customers products orders order_items inventory)
+rc=0
+
+offsets() { # offsets earliest|latest -> "topic offset" lines for partition 0
+    "${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \
+        --bootstrap-server localhost:9092 --time "$1" |
+        awk -F: '$1 ~ /^cdc\.public\./ && $2 == 0 {print $1, $3}'
+}
+declare -A earliest latest
+while read -r topic off; do earliest[$topic]=$off; done < <(offsets earliest)
+while read -r topic off; do latest[$topic]=$off; done < <(offsets latest)
+
+printf '%-24s %10s %10s %10s %10s  %s\n' topic earliest latest kafka raw verdict
+for t in "${TABLES[@]}"; do
+    topic=cdc.public.$t
+    lo=${earliest[$topic]:?no offsets for $topic}
+    hi=${latest[$topic]:?no offsets for $topic}
+    raw=$(scripts/ch-query.sh "SELECT uniqExact(kafka_offset) FROM raw_events
+        WHERE topic = '$topic' AND kafka_partition = 0 AND kafka_offset >= $lo AND kafka_offset < $hi")
+    verdict=OK
+    [[ $raw == $((hi - lo)) ]] || { verdict=MISMATCH; rc=1; }
+    printf '%-24s %10s %10s %10s %10s  %s\n' "$topic" "$lo" "$hi" $((hi - lo)) "$raw" "$verdict"
+done
+
+echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"
+scripts/ch-query.sh "SELECT count() AS events,
+        round(quantile(0.5)(dateDiff('millisecond', event_time, ingested_at)) / 1000, 1) AS p50_s,
+        round(quantile(0.95)(dateDiff('millisecond', event_time, ingested_at)) / 1000, 1) AS p95_s,
+        round(max(dateDiff('millisecond', event_time, ingested_at)) / 1000, 1) AS max_s
+    FROM raw_events
+    WHERE event_time >= now64(3) - INTERVAL 10 MINUTE
+    FORMAT PrettyCompactMonoBlock"
+exit $rc
