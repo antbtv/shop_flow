@@ -197,7 +197,11 @@
   - `spark-jobs/Dockerfile` (Spark 4.0.4, jar-файлы при сборке с sha256), сервис `spark` (`mem_limit`, том `spark-checkpoint`, UTC, UI на `127.0.0.1:4040`).
   - Приёмка: batch-чтение Kafka по `cdc\.public\..*` даёт по топикам столько сообщений, сколько `kafka-get-offsets` (end − start); heartbeat-топика нет.
   - Закрывает: NFR-1. Риск: клиент Kafka в Spark и брокер 4.3.
-- [ ] **2.3. Writer ClickHouse для Spark** (~45 мин, Pi5)
+- [x] **2.3. Writer ClickHouse для Spark** (~45 мин, Pi5)
+  - Сделано (2026-09-27): `scripts/create-ch-users.sh` (идемпотентный: каждый прогон приводит пароль, подсеть, профиль и права к целевым; `REVOKE ALL` + `GRANT INSERT` на 3 таблицы; профиль `spark_writer_profile` с `max_memory_usage` 512 МиБ; хеш sha256 считается локально). `CLICKHOUSE_SPARK_PASSWORD`, `LAN_SUBNET` в `.env.example`. Миграция `clickhouse/ddl/006_stg_order_items_quantity_int32.sql` (`ALTER ... MODIFY COLUMN quantity Int32`) вместо пересоздания: таблица была пустой (`count()` = 0), по конвенции `clickhouse-ddl` схема меняется только новой миграцией. PRD 5.2 обновлён.
+  - Приёмка пройдена: `apply-ddl.sh` и `create-ch-users.sh` по два прогона без ошибок; `DESCRIBE` `quantity Int32`; `SHOW GRANTS FOR spark_writer` = `INSERT` на `raw_events`, `stg_orders`, `stg_order_items`; `host_ip` `192.168.0.0/24`; от `spark_writer` `INSERT` в `raw_events` проходит, а `SELECT`, `INSERT` в `dim_customers`, `CREATE TABLE`, `ALTER ... DELETE` дают `ACCESS_DENIED`; тестовая строка удалена (1 → 0). Пароль: 0 совпадений в `git grep` и рабочих файлах; в `query_log` ClickHouse скрывает хеш (`IDENTIFIED WITH sha256_password HOST IP ...`).
+  - Проверку `DROP` хук `guard-bash` Claude не пропускает, её выполняет пользователь.
+  - Инцидент: sha256 пароля `spark_writer` попал в вывод сессии Claude (текст ошибочного запроса к `query_log`). Пароль случайный, 192 бита, по хешу не восстанавливается.
   - `scripts/create-ch-users.sh` (идемпотентный, `sha256_hash`, `HOST IP` подсети из переменной, профиль с `max_memory_usage` 512 МиБ), `CLICKHOUSE_SPARK_PASSWORD` и переменная подсети в `.env.example`.
   - `stg_order_items.quantity` → `Int32` (DDL 003, PRD 5.2); на Pi5 пустую таблицу пересоздать.
   - Приёмка: `SHOW GRANTS FOR spark_writer` только `INSERT` на 3 таблицы; `INSERT` проходит, `DROP`/`CREATE` дают `ACCESS_DENIED`; пароля нет в `git grep` и `system.query_log`; `quantity` = `Int32` в `DESCRIBE`.

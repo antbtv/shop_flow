@@ -150,7 +150,7 @@ CREATE TABLE stg_order_items (
     order_item_id  UInt64,
     order_id       UInt64,
     product_id     UInt64,
-    quantity       UInt32,
+    quantity       Int32,   -- как INT в Postgres: отрицательное видно DQ (ADR-0008)
     price_at_order Decimal(10, 2),
     version        UInt64,  -- source.lsn
     is_deleted     UInt8
