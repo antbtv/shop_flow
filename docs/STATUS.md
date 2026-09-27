@@ -191,7 +191,9 @@
   - `docs/adr/0008-spark-streaming-job.md`; PRD, разделы 8 и 10 (граница M2/M3, `spark-jobs/`).
   - Приёмка: вердикт `architect` «принять» или «принять с правками», правки внесены.
   - Закрывает: подготовку к FR-2, NFR-4, NFR-6.
-- [ ] **2.2. Образ Spark и сервис в `docker-compose.laptop.yml`** (~1 ч)
+- [x] **2.2. Образ Spark и сервис в `docker-compose.laptop.yml`** (~1 ч)
+  - Сделано (2026-09-27): `spark-jobs/Dockerfile` на `spark:4.0.4-scala2.13-java17-python3-ubuntu` (Ubuntu 22.04, Python 3.10, uid 185). Jar-файлы через `ADD --checksum=sha256`: `spark-sql-kafka-0-10_2.13` и `spark-token-provider-kafka-0-10_2.13` 4.0.4, `kafka-clients` 3.9.1, `commons-pool2` 2.12.0 (версии из POM Spark 4.0.4), `clickhouse-spark-runtime-4.0_2.13` 0.10.1. Коннектор — fat jar (21 МБ) со встроенным `client-v2` 0.9.5, отдельный клиент не нужен. Хеши сверены с `.sha256`/`.sha1` Maven Central. `spark-defaults.conf`: `local[2]`, драйвер 1g, UTC для сессии и JVM. Сервис `spark` под профилем `spark` до 2.6: `mem_limit` 2g, том `spark-checkpoint`, UI на `127.0.0.1:4040`, ротация логов 3×10 МБ. В ruff для `spark-jobs/` целевая версия py310.
+  - Приёмка пройдена: `spark-jobs/smoke_kafka_count.py` (batch-чтение 5 топиков) даёт `customers` 332, `inventory` 1, `order_items` 1, `orders` 1649, `products` 1, это совпадает с latest − earliest в `kafka-get-offsets`; `__debezium-heartbeat.cdc` (378) в выборку не попал. Клиент Kafka 3.9.1 работает с брокером 4.3.
   - `spark-jobs/Dockerfile` (Spark 4.0.4, jar-файлы при сборке с sha256), сервис `spark` (`mem_limit`, том `spark-checkpoint`, UTC, UI на `127.0.0.1:4040`).
   - Приёмка: batch-чтение Kafka по `cdc\.public\..*` даёт по топикам столько сообщений, сколько `kafka-get-offsets` (end − start); heartbeat-топика нет.
   - Закрывает: NFR-1. Риск: клиент Kafka в Spark и брокер 4.3.

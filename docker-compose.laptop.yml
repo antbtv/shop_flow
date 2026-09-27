@@ -123,6 +123,27 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
 
+  # Streaming job Kafka -> ClickHouse on Pi5 (ADR-0008). Behind a profile until the job exists (2.6).
+  spark:
+    profiles: [spark]
+    build: ./spark-jobs
+    mem_limit: 2g
+    depends_on:
+      kafka: { condition: service_healthy }
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      TZ: UTC
+    volumes:
+      # Never remove with `down -v`: losing it replays Kafka from the earliest offset (ADR-0008).
+      - spark-checkpoint:/checkpoints
+    ports:
+      - "127.0.0.1:4040:4040"
+    # A restart loop must not fill the laptop disk with logs.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
 volumes:
   pg-data:
   kafka-data:
+  spark-checkpoint:
