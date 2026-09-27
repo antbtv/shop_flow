@@ -232,7 +232,9 @@ retail-cdc-platform/
 ├── docker-compose.pi5.yml      # ClickHouse, Airflow
 ├── generator/
 │   └── generate_orders.py      # синтетический генератор нагрузки
-├── spark-jobs/
+├── spark-jobs/                 # образ Spark и streaming job (ADR-0008)
+│   ├── Dockerfile
+│   ├── shopflow_stream/        # разбор конверта, дедупликация
 │   └── streaming_to_clickhouse.py
 ├── clickhouse/
 │   └── ddl/                    # SQL из раздела 5.2
@@ -289,11 +291,12 @@ TELEGRAM_CHAT_ID=
 
 **Milestone 2 — потоковая обработка**
 - [ ] Spark Structured Streaming job: чтение из брокера, запись в `raw_events`
-- [ ] Идемпотентность (дедупликация по ключу + версии перед записью в fact/dim)
+- [ ] Заполнение `stg_orders`, `stg_order_items` с дедупликацией по ключу + версии (LSN), см. `docs/adr/0008-spark-streaming-job.md`
+- [ ] Устойчивость: повтор батча, недоступность ClickHouse, «ядовитые» события
 
 **Milestone 3 — моделирование данных**
 - [ ] SCD2-логика для `dim_customers`, `dim_products`
-- [ ] Заполнение `stg_orders`, `stg_order_items` и `fact_orders` поверх них
+- [ ] `fact_orders` поверх `stg_orders`, `stg_order_items`; генерация `products`, `order_items`, `inventory`
 - [ ] Материализованные представления для дневных агрегатов (выручка, воронка)
 
 **Milestone 4 — оркестрация и качество**

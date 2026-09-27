@@ -12,6 +12,7 @@
 - CDC: полный конверт Debezium в JSON без схем, 1 партиция на топик, fsync Kafka на каждое сообщение, REPLICA IDENTITY FULL на 5 таблицах, см. `docs/adr/0005-cdc-contract.md`
 - ClickHouse: версия = `source.lsn` только для таблиц «одна строка Postgres»; `raw_events` по позиции Kafka; `stg_orders` + `stg_order_items`, `fact_orders` поверх них в M3, см. `docs/adr/0006-clickhouse-schema-idempotency.md`
 - Деплой Pi5: `rsync` по явному списку путей без `.env`, отдельный `.env` на Pi5, compose `name: shopflow`, см. `docs/adr/0007-pi5-deploy.md`
+- Spark: один запрос `foreachBatch` → `raw_events` + `stg_orders`/`stg_order_items`, Spark 4.0.4 + коннектор ClickHouse, raw fail-fast, stg карантин, таймауты и watchdog, см. `docs/adr/0008-spark-streaming-job.md`
 - Репозиторий: `docs/` и PRD в git; `.claude/`, `CLAUDE.md`, `.env` локально.
 
 ## Milestone 0: подготовка окружения
@@ -174,3 +175,54 @@
 Итоги Milestone 1: цепочка Postgres → Debezium → Kafka на ноутбуке и ClickHouse на Pi5 работают и проверены по отдельности; мост между ними (Spark) строится в M2. Условия входа в M2: пользователь-writer ClickHouse для Spark (ADR-0007), подписка Spark на `cdc\.public\..*` (ADR-0005), чекпойнт на постоянном томе.
 
 **Milestone 1 завершён 2026-09-27.** PR `milestone-1` → `master` создаёт пользователь (`gh` не установлен, push по SSH из сессии Claude недоступен).
+
+## Milestone 2: потоковая обработка
+
+Ветка: `milestone-2`. План подтверждён 2026-09-27. Оценка ~10 ч. Шаги на Pi5 выполняет пользователь.
+Граница M2/M3: в M2 Spark пишет `raw_events`, `stg_orders`, `stg_order_items`; SCD2, `fact_orders`, MV и генерация `products`/`order_items`/`inventory` в M3.
+
+`architect` проверил ADR-0008 (2026-09-27): принять с правками, правки внесены. Главные: политика «ядовитых» событий (raw fail-fast, stg карантин), таймауты сокета и watchdog против зависания при пропаже Pi5 из Wi-Fi, ожидание `/ping` в entrypoint вместо цикла рестартов, `ingested_at` из Spark (часы ноутбука), явный список 5 топиков вместо шаблона, `max_by` по `(lsn, offset)`, `quantity Int32`, буфер Kafka = min(7 дней, 1 ГиБ / объём в сутки): для `orders` при `--rate 5` ≈ 3,4 дня.
+
+- [x] **2.0. Ветка** (~10 мин)
+  - Сделано (2026-09-27): PR #2 `milestone-1` → `master` влит пользователем, `master` fast-forward до `22140ed`, ветка `milestone-2` от `master`.
+  - Приёмка пройдена: `git log master..milestone-1` пусто, текущая ветка `milestone-2`.
+- [x] **2.1. ADR-0008, ревью `architect`** (~1 ч)
+  - Сделано (2026-09-27): ADR-0008 принят с правками (14 правок, в том числе 2 блокера), PRD разделы 8 и 10 обновлены. Замер для буфера: `cdc.public.orders` 1 447 915 байт на ~1650 событий.
+  - `docs/adr/0008-spark-streaming-job.md`; PRD, разделы 8 и 10 (граница M2/M3, `spark-jobs/`).
+  - Приёмка: вердикт `architect` «принять» или «принять с правками», правки внесены.
+  - Закрывает: подготовку к FR-2, NFR-4, NFR-6.
+- [ ] **2.2. Образ Spark и сервис в `docker-compose.laptop.yml`** (~1 ч)
+  - `spark-jobs/Dockerfile` (Spark 4.0.4, jar-файлы при сборке с sha256), сервис `spark` (`mem_limit`, том `spark-checkpoint`, UTC, UI на `127.0.0.1:4040`).
+  - Приёмка: batch-чтение Kafka по `cdc\.public\..*` даёт по топикам столько сообщений, сколько `kafka-get-offsets` (end − start); heartbeat-топика нет.
+  - Закрывает: NFR-1. Риск: клиент Kafka в Spark и брокер 4.3.
+- [ ] **2.3. Writer ClickHouse для Spark** (~45 мин, Pi5)
+  - `scripts/create-ch-users.sh` (идемпотентный, `sha256_hash`, `HOST IP` подсети из переменной, профиль с `max_memory_usage` 512 МиБ), `CLICKHOUSE_SPARK_PASSWORD` и переменная подсети в `.env.example`.
+  - `stg_order_items.quantity` → `Int32` (DDL 003, PRD 5.2); на Pi5 пустую таблицу пересоздать.
+  - Приёмка: `SHOW GRANTS FOR spark_writer` только `INSERT` на 3 таблицы; `INSERT` проходит, `DROP`/`CREATE` дают `ACCESS_DENIED`; пароля нет в `git grep` и `system.query_log`; `quantity` = `Int32` в `DESCRIBE`.
+  - Закрывает: условие входа M2 (ADR-0007).
+- [ ] **2.4. Spike: запись из Spark в ClickHouse на Pi5** (~1 ч)
+  - 3 строки с `topic='test.spike'` в `raw_events` через коннектор, затем удалить. Версия коннектора 0.10.1 или 0.10.0, клиент по POM коннектора.
+  - Приёмка: `count()` = 3, типы `DateTime64(3)` (из ISO с микросекундами и `Z`), `UInt64`, `Decimal(10,2)` без искажений; поведение null и отрицательного значения в `UInt*` записано; права коннектора по `system.query_log` (нужен ли `SELECT`); имена опций таймаутов найдены, при DROP-правиле на Pi5 вставка падает по таймауту, а не висит; после очистки 0.
+  - Риск: главное неизвестное. Запасные варианты: JDBC, затем `foreachPartition` + HTTP `JSONEachRow`, правка ADR-0008.
+- [ ] **2.5. Модуль преобразований и тесты** (~1 ч)
+  - `spark-jobs/shopflow_stream/transforms.py`, `tests/test_transforms.py` (локальная `SparkSession`, `pyspark` в `requirements-dev.txt`).
+  - Приёмка: pytest и ruff зелёные; случаи `c/u/d/r`, `d` с PK из ключа, два UPDATE в одной транзакции (LSN 26741552 < 26741704), повтор Debezium с тем же LSN (развязка по оффсету), карантин (null в PK, отрицательное значение в `UInt*`), raw fail-fast без `source.lsn`.
+  - Закрывает: NFR-4 (логика). Риск: Stop-хук станет медленнее, Spark-тесты под маркером `spark`.
+- [ ] **2.6. Streaming job: `raw_events`** (~1 ч)
+  - `spark-jobs/streaming_to_clickhouse.py` (подписка на 5 топиков, таймауты, ожидание `/ping` в entrypoint, watchdog + маркер для healthcheck, ротация логов), `scripts/check_pipeline.sh`.
+  - Приёмка: `raw_events FINAL` по топикам = позиции Kafka; события из 1.10 схлопнулись; heartbeat не попал; при простое генератора 15 мин контейнер `healthy` и без рестартов.
+  - Закрывает: FR-2, NFR-4.
+- [ ] **2.7. `stg_orders`, `stg_order_items`** (~1 ч)
+  - Приёмка (генератор остановлен): `stg_orders FINAL WHERE is_deleted=0` = `count(*)` в Postgres; 20 случайных `order_id` совпадают по `status` и `updated_at`; ручные INSERT → UPDATE → UPDATE → DELETE в `order_items` дают правильный `FINAL`; ручное «ядовитое» событие уходит в карантин (счётчик в логе), остальные топики пишутся.
+  - Закрывает: NFR-4 (версия = LSN).
+- [ ] **2.8. Задержка и память под нагрузкой** (~45 мин)
+  - Генератор 30 мин, `--rate 5`.
+  - Приёмка: p95 и max `ingested_at - event_time` < 5 мин; пик памяти `spark` без OOM; `system.parts WHERE active` по 3 таблицам не растёт; суточный объём каждого топика в байтах записан, буфер NFR-6 посчитан, решение по `retention.bytes` для `orders`.
+  - Закрывает: NFR-3, FR-2, NFR-6.
+- [ ] **2.9. Сценарии отказов** (~1,5 ч, частично Pi5)
+  - A) `SIGKILL` Spark; B) ClickHouse на Pi5 остановлен на 5 мин; B2) «чёрная дыра»: DROP для ноутбука в `DOCKER-USER` на Pi5 на 15 мин; C) `down`/`up` ноутбука без `-v`; D) повторы Debezium.
+  - Приёмка: после каждого `check_pipeline.sh` сходится, вывод в STATUS; в B и B2 нет цикла быстрых рестартов (ожидание `/ping` в логе), в B2 watchdog или таймаут завершили зависший батч.
+  - Закрывает: NFR-6, NFR-4.
+- [ ] **2.10. Итоги, ревью, закрытие** (~45 мин)
+  - Runbook (Spark): запуск, сброс чекпойнта, `failOnDataLoss=false` после простоя дольше буфера, потеря тома Kafka, карантин и дозаливка, запрет `down -v`. STATUS, `reviewer`, PR `milestone-2` → `master`.
+  - Приёмка: блокеров нет; pytest, ruff, sqlfluff зелёные.
