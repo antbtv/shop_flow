@@ -234,7 +234,12 @@
   - `spark-jobs/streaming_to_clickhouse.py` (подписка на 5 топиков, таймауты, ожидание `/ping` в entrypoint, watchdog + маркер для healthcheck, ротация логов), `scripts/check_pipeline.sh`.
   - Приёмка: `raw_events FINAL` по топикам = позиции Kafka; события из 1.10 схлопнулись; heartbeat не попал; при простое генератора 15 мин контейнер `healthy` и без рестартов.
   - Закрывает: FR-2, NFR-4.
-- [ ] **2.7. `stg_orders`, `stg_order_items`** (~1 ч)
+- [x] **2.7. `stg_orders`, `stg_order_items`** (~1 ч)
+  - Сделано (2026-09-27): в `foreachBatch` после `raw_events` для каждого `StgSpec`: `stg_rows` → карантин в лог (`WARN batch=N <table> quarantined=K sample=[(pk, offset, reason)]`) → `latest_per_key` → `writeTo(stg_*)`. `check_pipeline.sh` сверяет `stg_*` с Postgres: `orders` (строки, `sum(order_id)`, `max(updated_at)` в мс, распределение по статусам), `order_items` (строки, `sum(quantity)`, `sum(quantity * price_at_order)`).
+  - Чекпойнт сброшен пользователем (удаление тома хук Claude не пропускает): батчи 0–3 из 2.6 писали только `raw_events`, stg без истории. Заодно проверена процедура «потеря чекпойнта»: батч 0 перечитал Kafka с начала (2456 событий, 9,4 с), `raw_events` схлопнулся, позиции OK по 5 топикам.
+  - Приёмка пройдена (генератор остановлен): `orders` 947 = 947, `sum(order_id)` 449824, `max(updated_at)` 1790529547734 мс, статусы `cancelled=107,created=384,delivered=164,paid=171,shipped=121` совпадают; 20 случайных `order_id` совпадают построчно (`status`, `updated_at` до мс, `customer_id`).
+  - Ручной DML: позиция 2: INSERT (5; 10.00), затем в одной транзакции UPDATE → 6 и UPDATE → 7; 12.50 (LSN 27857920 < 27858064). Три события схлопнулись в батче: в `stg_order_items` одна строка `7 / 12.50 / 27858064` даже без `FINAL`. Позиция 3: INSERT + DELETE в одном батче → одна строка `is_deleted = 1` (значения из `before`), `FINAL` её скрывает. Итог `order_items` 2 строки, `sum(qty)` 9, сумма 127.48 = Postgres.
+  - Карантин: заказ `order_id = -5` (Postgres принимает, `UInt64` нет) → `WARN batch=1 stg_orders quarantined=1 sample=[(-5, 2051, 'bad order_id')]`, событие в `raw_events`, остальные записи батча прошли; его DELETE → то же в батче 2 (оффсет 2052). Оба события остаются в Kafka и `raw_events` и уйдут в карантин при каждом повторном чтении: это ожидаемо.
   - Приёмка (генератор остановлен): `stg_orders FINAL WHERE is_deleted=0` = `count(*)` в Postgres; 20 случайных `order_id` совпадают по `status` и `updated_at`; ручные INSERT → UPDATE → UPDATE → DELETE в `order_items` дают правильный `FINAL`; ручное «ядовитое» событие уходит в карантин (счётчик в логе), остальные топики пишутся.
   - Закрывает: NFR-4 (версия = LSN).
 - [ ] **2.8. Задержка и память под нагрузкой** (~45 мин)
