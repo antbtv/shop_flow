@@ -6,8 +6,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 COMPOSE=(docker compose -f docker-compose.laptop.yml)
-tables=("${@:-orders customers}")
-read -r -a tables <<<"${tables[*]}"
+tables=("$@")
+((${#tables[@]})) || tables=(orders customers)
 rc=0
 
 for t in "${tables[@]}"; do
