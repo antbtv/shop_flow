@@ -146,7 +146,12 @@
   - `clickhouse/ddl/000_database.sql` … `005_dim_products.sql` по ADR-0006 (`raw_events`, `stg_orders`, `stg_order_items`, `dim_customers`, `dim_products`; `fact_orders` в M3), `IF NOT EXISTS`; `scripts/apply-ddl.sh` (HTTP, креды в заголовках `X-ClickHouse-User`/`X-ClickHouse-Key`, без вывода).
   - Приёмка: `sqlfluff lint clickhouse/ddl` чистый.
   - Закрывает: NFR-4, NFR-5.
-- [ ] **1.9. `docker-compose.pi5.yml`: только ClickHouse** (~1 ч, `/deploy-pi5`)
+- [x] **1.9. `docker-compose.pi5.yml`: только ClickHouse** (~1 ч, `/deploy-pi5`)
+  - Сделано (2026-09-27): `docker-compose.pi5.yml` (`name: shopflow`, `clickhouse/clickhouse-server:25.8.33.6` с фиксированной сборкой, `mem_limit` 2816m, `stop_grace_period` 60s, healthcheck `/ping`), `clickhouse/config.d/shopflow.xml` (из memtest, ADR-0004), `clickhouse/users.d/shopflow-profile.xml` (на запрос `max_memory_usage` 1,5 ГиБ, сброс `GROUP BY`/`ORDER BY` на диск с 768 МиБ), `infra/pi5/pi5.env.example`. `scripts/ch-query.sh` и общий `scripts/lib/clickhouse-env.sh` (креды из env или `.env`, не в URL и не в `ps`). Конфиги сначала проверены на ноутбуке в контейнере с теми же монтированиями.
+  - Деплой: memtest на Pi5 уже был остановлен вместе с томами; `rsync` по ADR-0007 в `~/shopflow`; `.env` на Pi5 (`600`) с новым паролем, тот же пароль в `.env` ноутбука (сверено без вывода: `SAME`).
+  - Приёмка пройдена: `config -q` на Pi5 = `CONFIG_OK`; `up -d --wait` → `healthy` за 12 с; с ноутбука `/ping` = `Ok.`, 9000 открыт, 9009 закрыт; `ss -tlnp` на Pi5: 8123 и 9000 только на `192.168.0.151` (`docker-proxy`); `mem_limit=2952790016`, `restart=unless-stopped`; в `system.users` только `shopflow`, запрос без пароля даёт `REQUIRED_PASSWORD`; `apply-ddl.sh` дважды без ошибок, 5 таблиц с движками по ADR-0006; том `/mnt/data/docker/volumes/shopflow_clickhouse-data`; после `sudo reboot` ClickHouse поднялся сам (`uptime` 76 с), 5 таблиц на месте.
+  - Память в покое: 558–576 МиБ из 2,75 ГиБ, CPU 3–4 %.
+  - Заметка: пароль memtest (M0) передавался в командной строке и, вероятно, остался в `~/.bash_history` на Pi5; для боевого ClickHouse пароль новый.
   - ClickHouse 25.8, `name: shopflow`, `mem_limit` 2816m, `clickhouse/config.d/shopflow.xml` по ADR-0004, профиль с `max_memory_usage`, `default` без сетевого доступа, порты на `${PI5_HOST}`. Доставка `rsync` по ADR-0007; стенд memtest остановить (`down` без `-v`), проверить `docker volume ls`.
   - Приёмка: `config -q` проходит; `curl -s http://$PI5_HOST:8123/ping` = `Ok.`; `ss -tlnp` показывает 8123/9000 только на `$PI5_HOST`; лимит 2816m; `system.users` без сетевого `default`; `.env` на Pi5 `600`; после reboot отвечает.
   - Закрывает: NFR-2, NFR-7, PRD 6.1, ADR-0003, ADR-0004, ADR-0007.
