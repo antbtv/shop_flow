@@ -1,6 +1,6 @@
 # Runbook: CDC-стек на ноутбуке и ClickHouse на Pi5
 
-Как поднять и проверить цепочку Postgres → Debezium → Kafka (ноутбук) и ClickHouse (Pi5). Решения: [ADR-0005](adr/0005-cdc-contract.md) (контракт CDC), [ADR-0006](adr/0006-clickhouse-schema-idempotency.md) (схема ClickHouse), [ADR-0007](adr/0007-pi5-deploy.md) (деплой на Pi5). Хост Pi5: [`infra/pi5/README.md`](../infra/pi5/README.md).
+Как поднять и проверить цепочку Postgres → Debezium → Kafka (ноутбук) и ClickHouse (Pi5). Решения: [ADR-0005](adr/0005-cdc-contract.md) (контракт CDC), [ADR-0006](adr/0006-clickhouse-schema-idempotency.md) (схема ClickHouse), [ADR-0007](adr/0007-pi5-deploy.md) (деплой на Pi5), [ADR-0008](adr/0008-spark-streaming-job.md) (Spark). Хост Pi5: [`infra/pi5/README.md`](../infra/pi5/README.md).
 
 Все команды выполняются из корня репозитория на ноутбуке. Сокращение: `D="docker compose -f docker-compose.laptop.yml"`.
 
@@ -90,7 +90,41 @@ scripts/ch-query.sh 'SELECT name, engine FROM system.tables WHERE database = cur
 
 `scripts/load_sample_events.sh` (M1, одноразовый) копирует события из Kafka в `raw_events`; повторный запуск безопасен, дубли схлопываются.
 
-## 6. Аварии
+## 6. Spark: Kafka → ClickHouse
+
+Один streaming-запрос в контейнере `spark` (ADR-0008): 5 топиков `cdc.public.*` → `raw_events`, `stg_orders`, `stg_order_items`, trigger 30 с, чекпойнт на томе `shopflow_spark-checkpoint`.
+
+Один раз (и после смены пароля или подсети): `CLICKHOUSE_SPARK_PASSWORD` и `LAN_SUBNET` в `.env`, затем
+
+```bash
+scripts/create-ch-users.sh      # spark_writer: INSERT/SELECT на 3 таблицы, SELECT на system.clusters/macros
+scripts/apply-ddl.sh
+```
+
+Запуск и наблюдение:
+
+```bash
+$D up -d --wait spark                                   # entrypoint ждёт /ping ClickHouse, потом запускает запрос
+docker logs -f shopflow-spark-1 2>&1 | grep shopflow    # строка на батч: batch=, rows=, total_ms=
+docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}}' shopflow-spark-1
+scripts/check_pipeline.sh                               # Kafka vs raw_events, Postgres vs stg_*, задержка
+```
+
+- `check_pipeline.sh` точен, когда генератор остановлен и прошёл один trigger (30 с).
+- Spark UI: `http://127.0.0.1:4040`. Тесты преобразований: `.venv/bin/python -m pytest -q` (системный `python3` их пропускает).
+- Pi5 недоступен: делать ничего не нужно. Запрос падает по таймауту (≤ 2 мин), контейнер перезапускается и ждёт `/ping` с backoff до 5 мин (`waiting for ClickHouse /ping` в логе). События копятся в Kafka.
+- Зависание (в логе нет новых строк `batch=`, маркер не обновляется): watchdog завершает процесс через 10 мин тишины (`no progress for ... exiting`), Docker перезапускает контейнер.
+- Буфер Kafka: min(7 дней, 1 ГиБ / суточный объём топика), для `orders` при `--rate 5` около 3,4 дня (ADR-0008).
+
+Карантин (`WARN ... quarantined=N sample=[(pk, kafka_offset, reason)]`): строка не легла в типы ClickHouse, в `stg_*` не записана, но есть в `raw_events`. Посмотреть событие:
+
+```bash
+scripts/ch-query.sh "SELECT payload FROM raw_events WHERE topic = 'cdc.public.orders' AND kafka_offset = <offset> LIMIT 1"
+```
+
+После исправления схемы в `spark-jobs/shopflow_stream/transforms.py` (и DDL) переиграть поток сбросом чекпойнта (раздел 7), пока события ещё в Kafka.
+
+## 7. Аварии
 
 ### Слот потерян (`wal_status = lost`)
 
@@ -108,15 +142,45 @@ curl -s -X PUT localhost:8083/connectors/shopflow-pg/resume           # новы
 
 Оффсеты Connect хранились в Kafka: коннектор перерегистрировать (`scripts/register-connector.sh`), сделать повторный снапшот по процедуре выше. Оффсеты топиков начнутся с 0; в `raw_events` новые события не затрут старые, потому что `source_lsn` входит в ключ (ADR-0006).
 
-### Spark стоял дольше ретеншна (M2)
+### Сброс чекпойнта Spark
 
-Ретеншн топиков 7 дней или 1 ГиБ. Оффсеты чекпойнта окажутся за границей хранения, и запрос упадёт (`failOnDataLoss=true`). Рестарт с `failOnDataLoss=false`, затем сверка FR-8.
+Нужен при потере или порче чекпойнта, после потери тома Kafka (оффсеты чекпойнта больше конца топика, `failOnDataLoss`) и для перезаливки `stg_*` после карантина. Запрос читает Kafka с `earliest`, повторы схлопываются по ключам ADR-0006. Удаление тома хук Claude блокирует: выполняет пользователь.
 
-## 7. Остановка
+```bash
+$D stop spark && $D rm -f spark
+docker volume rm shopflow_spark-checkpoint
+$D up -d --wait spark
+scripts/check_pipeline.sh
+```
+
+### Spark стоял дольше буфера Kafka
+
+Оффсеты чекпойнта за границей хранения, запрос падает на каждом старте (`failOnDataLoss`). События за разрыв потеряны для ClickHouse.
+
+```bash
+FAIL_ON_DATA_LOSS=false $D up -d --wait spark    # продолжить с первого доступного оффсета
+# дождаться строки batch= в логе, затем вернуть проверку:
+$D up -d --wait spark
+```
+
+Затем сверка FR-8 (M4) и решение о перезаливке. `check_pipeline.sh` видит только позиции, которые ещё есть в Kafka.
+
+### Событие нарушает контракт (`ContractViolation`)
+
+Батч падает до записи, контейнер перезапускается и падает на том же батче; в логе позиции `topic:partition:offset`. Прочитать событие:
+
+```bash
+$D exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic cdc.public.orders --partition 0 --offset <offset> --max-messages 1 --formatter-property print.key=true
+```
+
+Если сломан источник (конфиг Debezium, SMT), исправить его: следующие события будут корректны, но битое остаётся в топике. Пропуск события — новый чекпойнт со `startingOffsets` за ним. **Процедура не прогонялась**, до применения согласовать и записать в ADR.
+
+## 8. Остановка
 
 ```bash
 $D stop            # остановить, данные сохраняются
 $D down            # удалить контейнеры, тома сохраняются
 ```
 
-`down -v` удаляет тома Postgres и Kafka (данные, оффсеты коннектора, слот теряет смысл) и заблокирован хуком: только вручную и осознанно.
+`down -v` удаляет тома Postgres, Kafka и чекпойнт Spark (данные, оффсеты коннектора, позиции Spark) и заблокирован хуком: только вручную и осознанно.

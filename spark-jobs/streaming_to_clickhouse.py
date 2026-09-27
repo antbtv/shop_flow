@@ -16,7 +16,14 @@ import sys
 from pyspark.sql import DataFrame, SparkSession
 from shopflow_stream.liveness import Heartbeat, ProgressListener, start_watchdog
 from shopflow_stream.sink import catalog_conf, table
-from shopflow_stream.transforms import raw_violations, to_raw_events
+from shopflow_stream.transforms import (
+    STG_SPECS,
+    StgSpec,
+    latest_per_key,
+    raw_violations,
+    stg_rows,
+    to_raw_events,
+)
 
 log = logging.getLogger("shopflow.stream")
 
@@ -27,16 +34,44 @@ TOPICS = ",".join(f"cdc.public.{t}" for t in TABLES)
 CHECKPOINT = os.environ.get("CHECKPOINT_DIR", "/checkpoints/streaming_to_clickhouse")
 TRIGGER = os.environ.get("TRIGGER_INTERVAL", "30 seconds")
 MAX_OFFSETS_PER_TRIGGER = int(os.environ.get("MAX_OFFSETS_PER_TRIGGER", "20000"))
+# "false" only for a manual recovery after a stop longer than Kafka retention (runbook).
+FAIL_ON_DATA_LOSS = os.environ.get("FAIL_ON_DATA_LOSS", "true")
 # Longer than one socket timeout (120 s) plus client retries, shorter than NFR-3 (5 min) x 2.
 WATCHDOG_TIMEOUT_S = float(os.environ.get("WATCHDOG_TIMEOUT_S", "600"))
 VIOLATION_SAMPLE = 5
+QUARANTINE_SAMPLE = 5
 
 
 class ContractViolation(RuntimeError):
     """An event breaks the CDC contract (ADR-0005): retrying cannot fix it."""
 
 
+def write_stg(raw: DataFrame, spec: StgSpec, batch_id: int) -> None:
+    """Latest state per PK into stg_*. Rows that do not fit ClickHouse types are quarantined:
+    logged, not written, still in raw_events for a reload (ADR-0008)."""
+    rows = stg_rows(raw, spec).persist()
+    try:
+        quarantined = rows.where(rows.quarantine_reason.isNotNull())
+        sample = quarantined.select(spec.pk, "kafka_offset", "quarantine_reason")
+        sample = sample.limit(QUARANTINE_SAMPLE).collect()
+        if sample:
+            log.warning(
+                "batch=%s %s quarantined=%s sample=%s",
+                batch_id,
+                spec.target_table,
+                quarantined.count(),
+                [(r[spec.pk], r.kafka_offset, r.quarantine_reason) for r in sample],
+            )
+        valid = latest_per_key(rows.where(rows.quarantine_reason.isNull()), spec)
+        if not valid.isEmpty():
+            valid.writeTo(table(spec.target_table)).append()
+    finally:
+        rows.unpersist()
+
+
 def write_batch(batch: DataFrame, batch_id: int) -> None:
+    """raw_events first, then stg_*. If a write fails the whole batch is replayed after the
+    restart; both writes are idempotent by the ADR-0006 keys."""
     raw = to_raw_events(batch).persist()
     try:
         violations = raw_violations(raw).select("topic", "kafka_partition", "kafka_offset")
@@ -50,6 +85,8 @@ def write_batch(batch: DataFrame, batch_id: int) -> None:
         if raw.isEmpty():
             return
         raw.writeTo(table("raw_events")).append()
+        for spec in STG_SPECS:
+            write_stg(raw, spec, batch_id)
     finally:
         raw.unpersist()
 
@@ -81,7 +118,7 @@ def main() -> int:
         .option("kafka.bootstrap.servers", os.environ["KAFKA_BOOTSTRAP"])
         .option("subscribe", TOPICS)
         .option("startingOffsets", "earliest")
-        .option("failOnDataLoss", "true")
+        .option("failOnDataLoss", FAIL_ON_DATA_LOSS)
         .option("maxOffsetsPerTrigger", MAX_OFFSETS_PER_TRIGGER)
         .load()
     )
@@ -92,7 +129,13 @@ def main() -> int:
         .trigger(processingTime=TRIGGER)
         .start()
     )
-    log.info("started: topics=%s trigger=%s checkpoint=%s", TOPICS, TRIGGER, CHECKPOINT)
+    log.info(
+        "started: topics=%s trigger=%s checkpoint=%s failOnDataLoss=%s",
+        TOPICS,
+        TRIGGER,
+        CHECKPOINT,
+        FAIL_ON_DATA_LOSS,
+    )
     try:
         query.awaitTermination()
     except Exception:
