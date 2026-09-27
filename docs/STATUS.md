@@ -1,6 +1,6 @@
 # Статус ShopFlow
 
-Обновлено: 2026-09-26
+Обновлено: 2026-09-27
 
 ## Решения
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
@@ -138,7 +138,11 @@
   - `scripts/check_cdc_counts.sh`; остановка `connect` на 2 мин под нагрузкой; `down && up -d` без `-v`.
   - Приёмка: число различных ключей среди `op in (c, r)` без удалённых совпадает с `count(*)` в Postgres (дубли после аварийной остановки Connect допустимы); нового снапшота (`op=r`) нет; слот `active=t`, WAL в слоте после догона в пределах МБ, в том числе после 10 мин простоя генератора (иначе `heartbeat.action.query`).
   - Закрывает: FR-1, NFR-6 (сторона ноутбука).
-- [ ] **1.8. DDL ClickHouse** (~45 мин)
+- [x] **1.8. DDL ClickHouse** (~45 мин)
+  - Сделано (2026-09-27): `clickhouse/ddl/000_database.sql` … `005_dim_products.sql` (`raw_events`, `stg_orders`, `stg_order_items`, `dim_customers`, `dim_products`), все `IF NOT EXISTS`. `scripts/apply-ddl.sh`: файлы по порядку через HTTP, креды в заголовках из fd (не в URL и не в `ps`), недостающие переменные берёт из `.env` без `source`, при ошибке печатает ответ ClickHouse.
+  - Приёмка пройдена: `sqlfluff lint clickhouse/ddl` = `All Finished!`. На временном ClickHouse 25.8 на ноутбуке (без тома, удалён после проверки): два прогона `apply-ddl.sh` без ошибок; неверный пароль даёт `AUTHENTICATION_FAILED` и остановку; движки и ключи по ADR-0006, TTL 30 дней и `ttl_only_drop_parts = 1`.
+  - Семантика на данных: `raw_events` 5 вставок → 3 строки после `FINAL` (повтор позиции Kafka схлопнут, тот же оффсет с другим LSN сохранён); `stg_order_items` версия 150 после 200 проигрывает, `is_deleted = 1` скрывает строку; SCD2 закрытие версии перезаписью с большим LSN, одна текущая версия.
+  - Исключения sqlfluff: `SETTINGS` после `TTL` не разбирается парсером (валидный ClickHouse), `-- noqa: PRS` на одной строке; `name` добавлен в `ignore_words`. Комментарий, начинающийся со слова `sqlfluff`, парсер принимает за inline-директиву.
   - `clickhouse/ddl/000_database.sql` … `005_dim_products.sql` по ADR-0006 (`raw_events`, `stg_orders`, `stg_order_items`, `dim_customers`, `dim_products`; `fact_orders` в M3), `IF NOT EXISTS`; `scripts/apply-ddl.sh` (HTTP, креды в заголовках `X-ClickHouse-User`/`X-ClickHouse-Key`, без вывода).
   - Приёмка: `sqlfluff lint clickhouse/ddl` чистый.
   - Закрывает: NFR-4, NFR-5.
