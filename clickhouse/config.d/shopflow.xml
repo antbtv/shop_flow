@@ -1,0 +1,27 @@
+<!-- Server settings for ClickHouse on Pi5, measured in Milestone 0.9 (ADR-0004).
+     Fit into mem_limit 2816m and cut background writes to the HDD. -->
+<clickhouse>
+    <!-- 2 GB for queries and merges; the remaining ~0.75 GB of the cgroup limit is for the mapped
+         binary and page cache, which count against it too (2560m caused constant reclaim). -->
+    <max_server_memory_usage>2147483648</max_server_memory_usage>
+    <mark_cache_size>268435456</mark_cache_size>
+    <index_mark_cache_size>67108864</index_mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <!-- background_pool_size is left at default: lowering it below the merge_tree
+         number_of_free_entries_in_pool_* thresholds makes the server refuse to start (code 36). -->
+
+    <!-- System logs nobody reads here: they only cost disk writes and merges. -->
+    <trace_log remove="1"/>
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <text_log remove="1"/>
+    <query_thread_log remove="1"/>
+    <query_views_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_log>
+    <part_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </part_log>
+</clickhouse>

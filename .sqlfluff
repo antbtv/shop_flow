@@ -1,0 +1,24 @@
+[sqlfluff]
+dialect = clickhouse
+max_line_length = 100
+# ClickHouse function and type names are case-sensitive (argMax, toDate, DateTime64): do not recase them.
+exclude_rules = CP03, CP05
+
+[sqlfluff:indentation]
+tab_space_size = 4
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = upper
+
+# Allow aligned column definitions in CREATE TABLE.
+[sqlfluff:layout:type:data_type_identifier]
+spacing_before = align
+align_within = create_table_statement
+
+[sqlfluff:layout:type:data_type]
+spacing_before = align
+align_within = create_table_statement
+
+# `version` is the ReplacingMergeTree version column by project convention; `name` comes from PRD 5.1.
+[sqlfluff:rules:references.keywords]
+ignore_words = version, name

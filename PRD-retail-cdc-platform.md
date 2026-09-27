@@ -99,10 +99,12 @@ CREATE TABLE inventory (
 );
 
 -- Важно для CDC: без REPLICA IDENTITY FULL Debezium не увидит старые значения
--- при UPDATE/DELETE (нужны для SCD2 и для дедупликации).
-ALTER TABLE customers REPLICA IDENTITY FULL;
-ALTER TABLE products  REPLICA IDENTITY FULL;
-ALTER TABLE orders    REPLICA IDENTITY FULL;
+-- при UPDATE/DELETE (нужны для SCD2, DQ и отладки). См. docs/adr/0005-cdc-contract.md.
+ALTER TABLE customers   REPLICA IDENTITY FULL;
+ALTER TABLE products    REPLICA IDENTITY FULL;
+ALTER TABLE orders      REPLICA IDENTITY FULL;
+ALTER TABLE order_items REPLICA IDENTITY FULL;
+ALTER TABLE inventory   REPLICA IDENTITY FULL;
 ```
 
 Postgres должен быть запущен с `wal_level = logical` (для Debezium/логической репликации).
@@ -111,54 +113,77 @@ Postgres должен быть запущен с `wal_level = logical` (для D
 
 ### 5.2 OLAP-схема (ClickHouse)
 
-```sql
--- Сырой слой: события CDC как есть, для отладки и повторной обработки
-CREATE TABLE raw_events (
-    topic         String,
-    event_time    DateTime64(3),
-    op            LowCardinality(String), -- c | u | d | r
-    payload       String -- сырой JSON
-) ENGINE = MergeTree
-ORDER BY (topic, event_time)
-TTL event_time + INTERVAL 30 DAY;
+Ключи и версии обоснованы в `docs/adr/0006-clickhouse-schema-idempotency.md`. Версия (`version`) = `source.lsn` Debezium: LSN изменения монотонен для одной строки Postgres, но не сравним между таблицами. Поэтому каждая таблица ниже соответствует одной таблице Postgres, а `fact_orders` собирается из staging. Все таблицы в базе `shopflow`, время в UTC. Точный DDL в `clickhouse/ddl/`.
 
--- SCD2-измерение клиентов
+```sql
+-- Сырой слой: события CDC как есть, для отладки и повторной обработки.
+-- Ключ = позиция в Kafka (+ LSN на случай пересоздания топика): повтор от Spark схлопывается.
+CREATE TABLE raw_events (
+    topic           LowCardinality(String),
+    kafka_partition UInt32,
+    kafka_offset    UInt64,
+    source_lsn      UInt64,
+    event_key       String,                  -- ключ сообщения Kafka (PK строки, JSON)
+    event_time      DateTime64(3, 'UTC'),    -- source.ts_ms, время коммита в Postgres
+    op              LowCardinality(String),  -- c | u | d | r
+    payload         String,                  -- сырой JSON (полный конверт Debezium)
+    ingested_at     DateTime64(3, 'UTC') DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMMDD(event_time)
+ORDER BY (topic, kafka_partition, kafka_offset, source_lsn)
+TTL toDateTime(event_time) + INTERVAL 30 DAY
+SETTINGS ttl_only_drop_parts = 1;
+
+-- Staging: последнее состояние строки Postgres, одна таблица на таблицу источника.
+CREATE TABLE stg_orders (
+    order_id    UInt64,
+    customer_id UInt64,
+    status      LowCardinality(String),
+    created_at  DateTime64(3, 'UTC'),
+    updated_at  DateTime64(3, 'UTC'),
+    version     UInt64,  -- source.lsn
+    is_deleted  UInt8
+) ENGINE = ReplacingMergeTree(version, is_deleted)
+ORDER BY order_id;
+
+CREATE TABLE stg_order_items (
+    order_item_id  UInt64,
+    order_id       UInt64,
+    product_id     UInt64,
+    quantity       UInt32,
+    price_at_order Decimal(10, 2),
+    version        UInt64,  -- source.lsn
+    is_deleted     UInt8
+) ENGINE = ReplacingMergeTree(version, is_deleted)
+ORDER BY order_item_id;
+
+-- SCD2-измерения. Закрытие версии = та же строка (id, valid_from) с большим version.
 CREATE TABLE dim_customers (
-    customer_id   UInt64,
-    name          String,
-    address       String,
-    segment       String,
-    valid_from    DateTime,
-    valid_to      Nullable(DateTime),
-    is_current    UInt8
-) ENGINE = ReplacingMergeTree(valid_from)
+    customer_id UInt64,
+    name        String,
+    address     String,
+    segment     String,
+    valid_from  DateTime64(6, 'UTC'),            -- source.ts_us
+    valid_to    Nullable(DateTime64(6, 'UTC')),
+    is_current  UInt8,
+    version     UInt64                           -- source.lsn последнего события по строке
+) ENGINE = ReplacingMergeTree(version)
 ORDER BY (customer_id, valid_from);
 
--- SCD2-измерение товаров
 CREATE TABLE dim_products (
-    product_id    UInt64,
-    name          String,
-    category      String,
-    price         Decimal(10,2),
-    valid_from    DateTime,
-    valid_to      Nullable(DateTime),
-    is_current    UInt8
-) ENGINE = ReplacingMergeTree(valid_from)
+    product_id UInt64,
+    name       String,
+    category   String,
+    price      Decimal(10, 2),
+    valid_from DateTime64(6, 'UTC'),
+    valid_to   Nullable(DateTime64(6, 'UTC')),
+    is_current UInt8,
+    version    UInt64
+) ENGINE = ReplacingMergeTree(version)
 ORDER BY (product_id, valid_from);
 
--- Факт заказов (идемпотентная запись через ReplacingMergeTree по версии)
-CREATE TABLE fact_orders (
-    order_item_id   UInt64,
-    order_id        UInt64,
-    customer_id     UInt64,
-    product_id      UInt64,
-    quantity         UInt32,
-    price_at_order   Decimal(10,2),
-    status           LowCardinality(String),
-    order_created_at DateTime,
-    version          UInt64 -- используется ReplacingMergeTree для дедупликации
-) ENGINE = ReplacingMergeTree(version)
-ORDER BY (order_item_id);
+-- fact_orders (M3): представление или refreshable MV поверх stg_orders JOIN stg_order_items
+-- по order_id. Денормализация в стриме отклонена: версия из двух топиков теряет обновления.
 ```
 
 ## 6. Архитектура
@@ -260,7 +285,7 @@ TELEGRAM_CHAT_ID=
 - [ ] Включить логическую репликацию в Postgres (`wal_level=logical`, `REPLICA IDENTITY FULL`)
 - [ ] Синтетический генератор — базовые insert/update в `orders`, `customers`
 - [ ] Проверить, что CDC-события доходят до топиков брокера
-- [ ] ClickHouse на Pi5 — поднять, создать таблицы из раздела 5.2, вручную залить тестовые события
+- [ ] ClickHouse на Pi5 — поднять, создать таблицы из раздела 5.2 (кроме `fact_orders`, он в M3), вручную залить тестовые события
 
 **Milestone 2 — потоковая обработка**
 - [ ] Spark Structured Streaming job: чтение из брокера, запись в `raw_events`
@@ -268,7 +293,7 @@ TELEGRAM_CHAT_ID=
 
 **Milestone 3 — моделирование данных**
 - [ ] SCD2-логика для `dim_customers`, `dim_products`
-- [ ] Заполнение `fact_orders`
+- [ ] Заполнение `stg_orders`, `stg_order_items` и `fact_orders` поверх них
 - [ ] Материализованные представления для дневных агрегатов (выручка, воронка)
 
 **Milestone 4 — оркестрация и качество**

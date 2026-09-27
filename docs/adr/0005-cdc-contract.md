@@ -1,0 +1,59 @@
+# ADR-0005: Контракт CDC: Postgres → Debezium → Kafka
+
+- **Статус:** принято (2026-09-26), ревью `architect`: принять с правками, правки внесены.
+- **Контекст:** FR-1 требует CDC по 5 таблицам (`customers`, `products`, `orders`, `order_items`, `inventory`) без изменения кода приложения. Формат событий в Kafka становится контрактом для Spark (M2), сырого слоя `raw_events` и SCD2 (M3). NFR-6: Kafka буферизует события, пока Pi5 или Spark недоступны. Ограничения ноутбука: 14 ГБ RAM, ~26 ГБ свободного диска на всё (образы, WAL, Kafka, позже чекпойнты Spark). Kafka с RF 1 на ноутбуке, который может выключиться аварийно.
+- **Решение:**
+  - **Версии:** Postgres 17, Kafka 4.x (образ `apache/kafka`, KRaft, один узел broker+controller), Kafka Connect на образе Debezium 3.x (`quay.io/debezium/connect`). Точные теги фиксируются в compose (1.3, 1.4).
+  - **Postgres:**
+    - `wal_level=logical`, `max_replication_slots=4`, `max_wal_senders=4`, `max_slot_wal_keep_size=4GB`.
+    - `REPLICA IDENTITY FULL` на всех 5 таблицах (PRD 5.1 требовал только на трёх). Без этого `before` в UPDATE и DELETE для `order_items` и `inventory` содержит только PK.
+    - Публикацию `shopflow_cdc` на 5 таблиц создаёт init-скрипт от владельца схемы. У Debezium отдельная роль `debezium` (`LOGIN REPLICATION`, `SELECT` на 5 таблиц) без прав владельца.
+  - **Коннектор:**
+    - `plugin.name=pgoutput`, `slot.name=shopflow_debezium`, `publication.name=shopflow_cdc`, `publication.autocreate.mode=disabled`, `table.include.list` на те же 5 таблиц, что в публикации.
+    - `topic.prefix=cdc` (топики `cdc.public.<table>`), `snapshot.mode=initial`, `heartbeat.interval.ms=60000`.
+    - Пароль через `EnvVarConfigProvider` (`${env:DEBEZIUM_PASSWORD}`), в git конфиг без секретов.
+  - **Формат событий:**
+    - `JsonConverter` для ключа и значения, `schemas.enable=false`, без Schema Registry. Схему событий Spark задаёт в коде.
+    - Полный конверт Debezium (`before`, `after`, `source`, `op`, `ts_ms`, `ts_us`) без SMT `ExtractNewRecordState`: `before` и `source.lsn` нужны для SCD2, идемпотентности и отладки.
+    - `decimal.handling.mode=string`: `NUMERIC(10,2)` приходит строкой `"19.99"`, а не base64.
+    - `timestamptz` приходит ISO-строкой в UTC (`ZonedTimestamp`, поведение по умолчанию).
+    - `tombstones.on.delete=false`: топики без compaction, tombstone не нужен, и в Spark не будет `null`-значений.
+  - **Топики:**
+    - Создаёт Debezium через `topic.creation.default.*`: 1 партиция, RF 1, `cleanup.policy=delete`, `retention.ms` 7 дней, `retention.bytes` 1 ГиБ, `segment.bytes` 256 МиБ.
+    - Внутренние топики Connect с RF 1.
+  - **Kafka (KRaft, один узел):**
+    - listeners `INTERNAL://kafka:29092` для контейнеров (Connect, Spark в контейнере в M2), `EXTERNAL://localhost:9092` для хоста, `CONTROLLER://:9093`;
+    - `offsets.topic.replication.factor=1`, `transaction.state.log.replication.factor=1`, `transaction.state.log.min.isr=1`: при конфигурации через env дефолты образа не действуют;
+    - `log.flush.interval.messages=1`: fsync каждого сообщения. При RF 1 после сдвига слота Postgres освобождает WAL, и page cache ноутбука — единственная копия события. При ~5 событиях/с fsync почти бесплатен.
+    - Порты ноутбука публикуются только на `127.0.0.1`.
+- **Рассмотренные варианты:**
+  - Avro + Schema Registry: контроль эволюции схемы, но ещё один сервис и бинарный формат, который неудобно читать в `raw_events`. Вернуться, если схема начнёт меняться.
+  - JSON со схемой в каждом сообщении (`schemas.enable=true`): размер сообщения растёт в 3–5 раз, а схема всё равно задаётся в Spark.
+  - SMT unwrap (`ExtractNewRecordState`): плоские события, но теряются `before` и позиция в WAL.
+  - Несколько партиций на топик: один брокер и малый поток, выигрыша нет. Одна партиция даёт порядок оффсетов, равный порядку коммитов, и упрощает сверку.
+  - `REPLICA IDENTITY FULL` только на 3 таблицах (как в PRD): дешевле по WAL, но DELETE из `order_items` без старых значений ломает DQ (FR-9) и отладку.
+  - `snapshot.mode=when_needed`: сам делает повторный снапшот при потере слота, но скрывает инцидент. Выбран явный ручной runbook.
+  - `provide.transaction.metadata=true`: границы транзакций в отдельном топике позволили бы собирать `orders` и `order_items` вместе. Не нужно при нормализованном staging (ADR-0006).
+  - fsync по времени (`log.flush.interval.ms`): остаётся окно, когда слот уже сдвинут, а сообщение ещё не на диске.
+- **Приёмка (1.3–1.7):**
+  - `SHOW wal_level` = `logical`; `relreplident` = `f` у 5 таблиц; в `pg_publication_tables` 5 строк; коннектор `RUNNING`; UPDATE в `orders` даёт событие с непустым `before`.
+  - Число различных ключей среди `op in (c, r)` без удалённых (`op = d`) совпадает с `count(*)` в Postgres. Дубли после аварийной остановки Connect допустимы (at-least-once).
+  - После остановки Connect события догружаются без нового снапшота.
+  - На реальных событиях проверить: разные `source.lsn` у двух UPDATE одной строки в одной транзакции; наличие `source.ts_us`; одинаковый `source.lsn` у всех `op=r`; сдвигается ли `confirmed_flush_lsn`, пока генератор простаивает.
+- **Последствия:**
+  - **Худший случай по диску:** Kafka удаляет сегменты целиком, поэтому на топик до `retention.bytes + segment.bytes` ≈ 1,25 ГиБ, на 5 топиков ≈ 6,3 ГиБ. Плюс до 4 ГБ WAL в слоте, итого ≈ 10,5 ГБ из ~26 ГБ свободных. Реальный поток ~0,4 ГБ в сутки, так что лимит по времени (7 дней) наступит раньше лимита по размеру.
+  - **Буфер NFR-6:** 7 дней. Если Spark (M2) стоит дольше, оффсеты чекпойнта уйдут за границу хранения, и запрос упадёт (`failOnDataLoss=true`). Восстановление: ручной рестарт с `failOnDataLoss=false`, затем сверка (FR-8).
+  - **Потеря слота:** если Connect стоит дольше, чем помещается в 4 ГБ WAL, слот получает `wal_status = lost`. Восстановление ручное (в runbook): удалить слот, сбросить оффсеты коннектора, повторный снапшот. DELETE за время простоя снапшот не покажет, их находит сверка FR-8.
+  - **Первый снапшот:** генератор на это время останавливается (правило runbook). Иначе изменение, начатое до создания слота, может получить LSN меньше LSN снапшота и проиграть устаревшей строке `op=r` (ADR-0006).
+  - **Потеря тома Kafka:** оффсеты Connect хранятся в Kafka, значит понадобится повторный снапшот. Дубли гасит идемпотентность в ClickHouse (NFR-4).
+  - **Heartbeat:** `heartbeat.interval.ms` без `heartbeat.action.query` может не сдвигать слот, пока в 5 таблицах тишина. Если в 1.7 WAL в слоте растёт при простое генератора, добавить таблицу `debezium_heartbeat` и `heartbeat.action.query`.
+  - **Подписка Spark:** явный список топиков или шаблон `cdc\.public\..*`, чтобы не захватить `__debezium-heartbeat.cdc`.
+  - **Эволюция схемы:** DDL Postgres меняется только вместе со схемой событий в Spark и DDL ClickHouse. `from_json` с явной схемой молча теряет новые колонки. Страховка — сырой `payload` в `raw_events`.
+  - **TOAST:** при `REPLICA IDENTITY FULL` несжатые TOAST-колонки могут прийти как `__debezium_unavailable_value`. Для коротких `TEXT` схемы 5.1 риск низкий.
+  - **Секреты в окружении контейнеров:** `EnvVarConfigProvider` читает пароль Debezium из env контейнера Connect, а Postgres получает свои пароли через env. Любой, кто может выполнить `docker inspect` или `docker exec ... env` на ноутбуке, видит их в открытом виде. Это принятый риск: доступ к Docker равен root на ноутбуке, по сети секреты не уходят (REST `/config` показывает плейсхолдер), в git их нет. Следствия: пароли должны быть случайными (`openssl rand -hex 24`), а вывод `docker inspect` и `env` контейнеров нельзя вставлять в отчёты и логи.
+  - Инвариант REPLICA IDENTITY в PRD 5.1 и CLAUDE.md расширяется до 5 таблиц.
+- **История для интервью:**
+  - почему полный конверт, а не unwrap (SCD2 нужен `before`, идемпотентности нужен LSN);
+  - почему `max_slot_wal_keep_size` (слот без лимита может заполнить диск источника);
+  - почему fsync на каждое сообщение при RF 1;
+  - почему без Schema Registry на старте.

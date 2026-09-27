@@ -1,0 +1,30 @@
+# ADR-0007: Деплой на Pi5: доставка файлов, секреты, пользователи ClickHouse
+
+- **Статус:** принято (2026-09-26), ревью `architect`: принять с правками, правки внесены.
+- **Контекст:** на Pi5 работают ClickHouse (M1) и Airflow (M4) по `docker-compose.pi5.yml`. У Claude нет доступа к Pi5, команды выполняет пользователь. У Pi5 нет доступа к GitHub, и давать его не нужно. Секреты только в `.env`.
+- **Решение:**
+  - **Доставка файлов.** Через `rsync` в `~/shopflow` на Pi5 по явному списку путей: `docker-compose.pi5.yml`, `clickhouse/` (позже `airflow/`).
+    - Исключения: `--exclude='.env' --exclude='.git' --exclude='.venv'`.
+    - `--delete` допустим только внутри `clickhouse/`, но не на корне `~/shopflow`.
+    - Источник истины — git на ноутбуке, на Pi5 файлы не правятся.
+    - `config.d/*.xml` с режимом 644: их читает пользователь контейнера (uid 101).
+  - **Секреты.** На Pi5 отдельный `~/shopflow/.env` (`chmod 600`) только с переменными Pi5: `PI5_HOST`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` (в M4 добавятся переменные Airflow). Ноутбучные секреты (Postgres, Debezium) на Pi5 не попадают. При смене IP Pi5 правятся оба `.env`.
+  - **Имя проекта compose.** `name: shopflow` в `docker-compose.pi5.yml`, чтобы тома не смешивались со стендом memtest. До первого `up` проверяем `docker volume ls`.
+  - **Пользователи ClickHouse в M1.**
+    - Один пользователь `shopflow` с управлением доступом (`CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1`) и профилем с `max_memory_usage`.
+    - Пользователь `default` без сетевого доступа.
+    - DDL применяется с ноутбука по HTTP. Креды передаются в заголовках `X-ClickHouse-User`/`X-ClickHouse-Key` из env, не в URL.
+    - Writer для Spark создаётся SQL-миграцией до первого запуска Spark: это условие входа в M2. Reader для дашборда создаётся в M5.
+  - **Стенд memtest.** `infra/pi5/memtest` останавливается до первого деплоя (`down` без `-v`), его тома пользователь удаляет вручную.
+- **Рассмотренные варианты:**
+  - `git clone` на Pi5: нужен deploy key и доступ Pi5 в интернет к GitHub. Лишняя поверхность атаки.
+  - `git archive` + `scp`: на Pi5 уезжает только закоммиченное, но нет дешёвой проверки расхождений через `rsync --dry-run`.
+  - Общий `.env` с ноутбука: на Pi5 попадают пароли, которые там не нужны.
+  - Отдельные пользователи ClickHouse сразу: пока пишет только ручной скрипт, выигрыша нет.
+- **Приёмка (1.9):**
+  - `docker compose -f docker-compose.pi5.yml config -q` проходит;
+  - `curl -s http://$PI5_HOST:8123/ping` = `Ok.`;
+  - `sudo ss -tlnp` показывает 8123/9000 только на `$PI5_HOST`;
+  - `SELECT name FROM system.users` содержит только `shopflow`, или у `default` нет сетевого доступа;
+  - после `rsync` `stat -c %a ~/shopflow/.env` на Pi5 по-прежнему `600`.
+- **Последствия:** при правке compose или конфигов повторяется `rsync` + `up -d` (шаги в `/deploy-pi5` и runbook). Расхождение файлов на Pi5 и в git проверяется `rsync --dry-run --itemize-changes`.

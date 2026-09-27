@@ -1,0 +1,128 @@
+# Laptop stack (NFR-1): Postgres -> Debezium (Kafka Connect) -> Kafka. Decisions: docs/adr/0005-cdc-contract.md.
+# Ports are published on 127.0.0.1 only.
+name: shopflow
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    mem_limit: 1g
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+      # Caps WAL held by an inactive slot so it cannot fill the laptop disk (ADR-0005).
+      - -c
+      - max_slot_wal_keep_size=4GB
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:?set DEBEZIUM_PASSWORD}
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:4.3.1
+    mem_limit: 1g
+    restart: unless-stopped
+    environment:
+      # Single-node KRaft: broker and controller in one process. With env config the image
+      # defaults are not applied, so every required setting is listed here (ADR-0005).
+      CLUSTER_ID: wd0rRExvRmSQvJPNQ11Jag
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # INTERNAL for containers (Connect, Spark in a container), EXTERNAL for processes on the host.
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created explicitly (Debezium topic.creation, Connect internal topics), never by a typo.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # RF 1: once the slot moves, the page cache is the only copy of an event. fsync every message.
+      KAFKA_LOG_FLUSH_INTERVAL_MESSAGES: 1
+      # Broker-wide defaults; CDC topics get the same values from the connector (ADR-0005).
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 1073741824
+      KAFKA_LOG_SEGMENT_BYTES: 268435456
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 20s
+      retries: 20
+      start_period: 20s
+
+  connect:
+    image: quay.io/debezium/connect:3.6.3.Final
+    mem_limit: 1536m
+    restart: unless-stopped
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: shopflow-connect
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # Commit offsets (and confirm the slot LSN) every 10 s: shorter replay after a crash.
+      OFFSET_FLUSH_INTERVAL_MS: 10000
+      HEAP_OPTS: -Xms512m -Xmx768m
+      # Connector configs reference ${env:...}; only the variables below are readable.
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: ^(DEBEZIUM_PASSWORD|POSTGRES_DB)$$
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:?set DEBEZIUM_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+    ports:
+      - "127.0.0.1:8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS localhost:8083/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Synthetic load (M1). Not started by plain `up`: use the profile, e.g.
+  #   docker compose -f docker-compose.laptop.yml --profile generator run --rm generator --duration 60
+  generator:
+    profiles: [generator]
+    build: ./generator
+    mem_limit: 256m
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+
+volumes:
+  pg-data:
+  kafka-data:

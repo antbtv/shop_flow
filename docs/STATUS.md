@@ -1,6 +1,6 @@
 # Статус ShopFlow
 
-Обновлено: 2026-09-26
+Обновлено: 2026-09-27
 
 ## Решения
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
@@ -9,6 +9,9 @@
 - Дашборд: Grafana или Superset, не решено (PRD, раздел 13). Допущение: на Pi5 резерв 0,5 ГБ под Grafana; Superset, если выберем, запускается на ноутбуке.
 - Память Pi5: жёсткие `mem_limit`, LocalExecutor, урезанный ClickHouse, см. `docs/adr/0004-pi5-memory-budget.md`
 - Доступ Pi5 → Postgres на ноутбуке (для FR-8): решаем в Milestone 4 отдельным ADR.
+- CDC: полный конверт Debezium в JSON без схем, 1 партиция на топик, fsync Kafka на каждое сообщение, REPLICA IDENTITY FULL на 5 таблицах, см. `docs/adr/0005-cdc-contract.md`
+- ClickHouse: версия = `source.lsn` только для таблиц «одна строка Postgres»; `raw_events` по позиции Kafka; `stg_orders` + `stg_order_items`, `fact_orders` поверх них в M3, см. `docs/adr/0006-clickhouse-schema-idempotency.md`
+- Деплой Pi5: `rsync` по явному списку путей без `.env`, отдельный `.env` на Pi5, compose `name: shopflow`, см. `docs/adr/0007-pi5-deploy.md`
 - Репозиторий: `docs/` и PRD в git; `.claude/`, `CLAUDE.md`, `.env` локально.
 
 ## Milestone 0: подготовка окружения
@@ -75,3 +78,99 @@
 `reviewer` (2026-09-26): блокеров нет. Исправлено: решение по Kafka в PRD (разделы 6, 7, 8, 10, 13), пример IP, пароль метабазы в memtest из env, пояснения к `after.rules`. Не подтвердилось: потеря `DOCKER-USER` при `systemctl restart docker` (проверено, правила сохраняются).
 
 **Milestone 0 завершён 2026-09-26.**
+
+## Milestone 1: MVP, связность
+
+Ветка: `milestone-1`. План подтверждён 2026-09-26. Оценка ~11 ч. Шаги на Pi5 выполняет пользователь.
+
+До кода `architect` проверяет: A) ADR-0005, контракт CDC (конвертер, decimal, tombstones, REPLICA IDENTITY FULL на все 5 таблиц, роль и публикация Debezium, `max_slot_wal_keep_size`, ретеншн Kafka при 26 ГБ свободного диска ноутбука, listeners под Spark в M2); B) ADR-0006, поправки к схеме ClickHouse 5.2 (позиция события в `raw_events`, версия SCD2 отдельно от `valid_from`, источник `version` в `fact_orders`); C) деплой на Pi5 (`rsync`, отдельный `.env`, пользователи ClickHouse).
+
+- [x] **1.0. Ветки** (~10 мин)
+  - Сделано (2026-09-26): `milestone-0` влит в `master` (PR #1), ветка `milestone-1` от `master`.
+- [x] **1.1. Python-инструменты** (~20 мин)
+  - Сделано (2026-09-26): `pyproject.toml` (ruff, pytest), `.sqlfluff` (диалект `clickhouse`), `requirements-dev.txt` (pytest 9.1.1, ruff 0.16.9, sqlfluff 4.3.0), `.venv`.
+  - Приёмка пройдена: `ruff check .` = `All checks passed!`, `sqlfluff lint clickhouse/ddl` = `All Finished!`. DDL из PRD 5.2 разбирается без ошибок парсинга.
+  - Исключения в `.sqlfluff`: CP03 и CP05 выключены (имена функций и типов ClickHouse регистрозависимы), выравнивание колонок в `CREATE TABLE` разрешено, `version` разрешён как идентификатор.
+- [x] **1.2. ADR-0005, ADR-0006, ADR-0007, ревью `architect`** (~1 ч)
+  - Сделано (2026-09-26): деплой вынесен в отдельный ADR-0007. `architect`: все три «принять с правками», правки внесены. PRD 5.1 (REPLICA IDENTITY на 5 таблиц), 5.2 (новая схема) и раздел 10 обновлены.
+  - Главные правки: `fact_orders` из двух топиков терял бы обновления (LSN изменения не сравним между таблицами), заменён на `stg_orders` + `stg_order_items`; правила SCD2 для нескольких UPDATE в одной транзакции; `source_lsn` в ключе `raw_events`; fsync Kafka; явные `publication.name`, `slot.name`, KRaft RF 1; `rsync` без `.env`, `name: shopflow`.
+  - Проверить на реальных событиях (1.5, 1.7): разные `source.lsn` у двух UPDATE одной строки в одной транзакции; есть `source.ts_us`; одинаковый `source.lsn` у `op=r`; сдвигается ли слот при простое генератора.
+  - Закрывает: подготовку к FR-1, NFR-4, NFR-6.
+- [x] **1.3. Postgres в `docker-compose.laptop.yml`** (~45 мин)
+  - Сделано (2026-09-26): `docker-compose.laptop.yml` (`name: shopflow`, `postgres:17-bookworm`, `mem_limit` 1g), `postgres/init/001_schema.sql`, `postgres/init/002_debezium_role.sh` (пароль через переменную psql), `DEBEZIUM_PASSWORD` в `.env.example`.
+  - Приёмка пройдена: `wal_level` = `logical`, `max_slot_wal_keep_size` = `4GB`; `relreplident` = `f` у 5 таблиц; `pg_publication_tables` = 5; `debezium`: `rolreplication=t`, `rolsuper=f`, только `SELECT` на 5 таблиц; вход по паролю через TCP и `IDENTIFY_SYSTEM` проходят, INSERT даёт `permission denied`; `ss -tlnp`: 5432 только на `127.0.0.1`.
+  - Окружение ноутбука: пользователь добавлен в группу `docker`, до перелогина Claude запускает docker через `sg docker -c`.
+  - Postgres 17, `wal_level=logical`, `max_slot_wal_keep_size`, порт на `127.0.0.1`; `postgres/init/001_schema.sql`: DDL 5.1, REPLICA IDENTITY, публикация на 5 таблиц, роль `debezium` (`DEBEZIUM_PASSWORD` в `.env.example`).
+  - Приёмка: `SHOW wal_level` = `logical`; `relreplident` = `f` у 5 таблиц; `pg_publication_tables` = 5 строк; `rolreplication` у `debezium` = `t`.
+  - Закрывает: NFR-1, инвариант Postgres.
+  - Риск: init-скрипты выполняются только на пустом томе.
+- [x] **1.4. Kafka (KRaft) и Kafka Connect (Debezium)** (~1 ч)
+  - Сделано (2026-09-26): `apache/kafka:4.3.1` (KRaft, один узел, статический кворум), `quay.io/debezium/connect:3.6.3.Final` (клиенты Kafka 4.3.0, Java 21). Listeners `INTERNAL://kafka:29092`, `EXTERNAL://localhost:9092`, `CONTROLLER://:9093`. `auto.create.topics.enable=false`. Пароль Debezium через `EnvVarConfigProvider` с `allowlist.pattern` только на `DEBEZIUM_PASSWORD`. `offset.flush.interval.ms` 10 с.
+  - Приёмка пройдена: все 3 сервиса `healthy`; `connector-plugins` содержит `io.debezium.connector.postgresql.PostgresConnector`; топики `connect-configs`, `connect-offsets`, `connect-status` с RF 1; у брокера `log.flush.interval.messages=1`, `log.retention.hours=168`, `log.retention.bytes=1073741824`, `log.segment.bytes=268435456`; 9092 и 8083 только на `127.0.0.1`.
+  - Память в покое: Connect 842 МиБ из 1,5 ГиБ, Kafka 415 МиБ из 1 ГиБ, Postgres 27 МиБ.
+  - Заметки: `retention.*` брокера на compact-топики Connect не действует. `watchtower` на ноутбуке работает с `--label-enable` и контейнеры `shopflow` не обновляет.
+  - Kafka 4.x KRaft, внутренний и внешний listener, ретеншн по ADR-0005; Connect на образе Debezium 3.x, RF=1, `mem_limit`, `restart: unless-stopped`.
+  - Приёмка: все сервисы `healthy`; `curl -s localhost:8083/connector-plugins` содержит `io.debezium.connector.postgresql.PostgresConnector`.
+  - Закрывает: NFR-1.
+  - Риск: `advertised.listeners` для хоста и контейнеров.
+- [x] **1.5. Регистрация коннектора Debezium** (~45 мин)
+  - Сделано (2026-09-26): `debezium/postgres-connector.json` (в git только `${env:DEBEZIUM_PASSWORD}` и `${env:POSTGRES_DB}`, allowlist провайдера на эти две переменные), `scripts/register-connector.sh` (идемпотентный `PUT`, ждёт `RUNNING`, при сбое печатает trace).
+  - Приёмка пройдена: два запуска подряд дают `shopflow-pg: RUNNING RUNNING`; REST `/config` показывает плейсхолдеры, а не секреты; созданы `cdc.public.{customers,products,orders,order_items,inventory}` и `__debezium-heartbeat.cdc`; в `cdc.public.orders` `c`, `u` с `before`, `d` с полным `before`, tombstone нет; ключ `{"order_id":1}`; `price_at_order` = `"19.99"`; `timestamptz` в ISO UTC; слот `shopflow_debezium` `active`, `wal_status=reserved`.
+  - Проверки ADR-0006: в транзакции `txId 773` два UPDATE одной строки имеют разные `source.lsn` (26741552 < 26741704) и одинаковый `source.ts_us`; поле `source.ts_us` есть. Одинаковый LSN у `op=r` не проверен: при снапшоте таблицы были пусты.
+  - Урок: в Kafka 4.3 `kafka-console-consumer.sh --property` устарел и пишет предупреждение в stdout, использовать `--formatter-property`.
+  - `debezium/postgres-connector.json` (`topic.prefix=cdc`, `pgoutput`, 5 таблиц, пароль через `${env:...}`), `scripts/register-connector.sh` (идемпотентный `PUT`).
+  - Приёмка: коннектор и задача `RUNNING`; после ручных INSERT/UPDATE/DELETE в `orders` в `cdc.public.orders` видны `op` `c`, `u` (с непустым `before`), `d`; есть все 5 топиков `cdc.public.*`; в `source` есть `lsn` и `ts_us`, у двух UPDATE одной строки в одной транзакции разные `lsn`.
+  - Закрывает: FR-1.
+- [x] **1.6. Генератор нагрузки** (~1 ч)
+  - Сделано (2026-09-26): `generator/model.py` (переходы статусов, данные клиентов, сезонность по часам, без psycopg), `generator/generate_orders.py` (psycopg 3, каждое действие отдельной транзакцией, `FOR UPDATE SKIP LOCKED`, пуассоновский поток, SIGTERM), `tests/test_generator.py` (13 тестов). Запуск через сервис compose `generator` (профиль `generator`, `python:3.12-slim`, `USER nobody`): секреты подставляет compose из `.env`, в командной строке их нет.
+  - Приёмка пройдена: `python3 -m pytest -q` = `13 passed` (системный Python и `.venv`); `ruff check .` чистый; прогон `--duration 60 --rate 5 --seed 1 --no-seasonality`: 282 действия, заказов 1 → 115, клиентов 1 → 16; статусы только `created/paid/shipped/delivered/cancelled`; в `cdc.public.orders` 116 `c`, 122 `u`, 1 `d`, все 122 перехода `before → after` допустимы по модели, пустых UPDATE нет.
+  - Заметка: засев `--customers` срабатывает только на пустой таблице; в прогоне уже был тестовый клиент из 1.5, поэтому засева не было.
+  - `generator/generate_orders.py` (psycopg 3, `--rate`, `--duration`, `--seed`): засев `customers`, INSERT `orders`, переходы статусов, UPDATE адреса и сегмента; тесты `tests/test_generator.py`.
+  - Приёмка: `python3 -m pytest -q` зелёный, `ruff check .` чистый; после прогона 60 с строки растут, статусы только допустимые.
+  - Вне скоупа: `products`, `order_items`, `inventory` генерируем в M3.
+- [x] **1.7. Сквозная проверка CDC и перезапуск ноутбука** (~1 ч)
+  - Сделано (2026-09-26): `scripts/check_cdc_counts.sh` + `scripts/cdc_state.py` (проигрывает события по ключам: живые ключи, счётчики `op`, повторы `(key, lsn, op)`), тесты `tests/test_cdc_state.py` (всего 17 тестов зелёные).
+  - Базовая сверка: все 5 таблиц совпадают.
+  - Сценарий A (Connect остановлен на 2 мин под нагрузкой): слот `active=f`, WAL 40 → 243 КБ; после старта `active=t`, отставание 6000 байт; `orders` 469 = 469, `customers` 68 = 68, дублей 0, `op=r` нет.
+  - Сценарий B (`down` / `up -d` без `-v`): коннектор сохранился (конфиг в Kafka), `RUNNING`, `op=r` нет; `orders` 532 = 532, `customers` 74 = 74.
+  - Сценарий C (SIGKILL Connect под нагрузкой, `rate 10`): дубли `orders` 73, `customers` 17 (≈ 10 с потока = `offset.flush.interval.ms`), живые ключи совпадают (765 = 765, 111 = 111). At-least-once подтверждён, дубли гасит ClickHouse по LSN (ADR-0006).
+  - Простой генератора 10 мин (19:07–19:17 UTC): `confirmed_flush_lsn` не двигается (heartbeat без `action.query` слот не сдвигает), но WAL вырос на 264 байта, отставание 7024 байта. `heartbeat.action.query` не нужен; пересмотреть, если при долгом простое отставание уйдёт в мегабайты.
+  - `scripts/check_cdc_counts.sh`; остановка `connect` на 2 мин под нагрузкой; `down && up -d` без `-v`.
+  - Приёмка: число различных ключей среди `op in (c, r)` без удалённых совпадает с `count(*)` в Postgres (дубли после аварийной остановки Connect допустимы); нового снапшота (`op=r`) нет; слот `active=t`, WAL в слоте после догона в пределах МБ, в том числе после 10 мин простоя генератора (иначе `heartbeat.action.query`).
+  - Закрывает: FR-1, NFR-6 (сторона ноутбука).
+- [x] **1.8. DDL ClickHouse** (~45 мин)
+  - Сделано (2026-09-27): `clickhouse/ddl/000_database.sql` … `005_dim_products.sql` (`raw_events`, `stg_orders`, `stg_order_items`, `dim_customers`, `dim_products`), все `IF NOT EXISTS`. `scripts/apply-ddl.sh`: файлы по порядку через HTTP, креды в заголовках из fd (не в URL и не в `ps`), недостающие переменные берёт из `.env` без `source`, при ошибке печатает ответ ClickHouse.
+  - Приёмка пройдена: `sqlfluff lint clickhouse/ddl` = `All Finished!`. На временном ClickHouse 25.8 на ноутбуке (без тома, удалён после проверки): два прогона `apply-ddl.sh` без ошибок; неверный пароль даёт `AUTHENTICATION_FAILED` и остановку; движки и ключи по ADR-0006, TTL 30 дней и `ttl_only_drop_parts = 1`.
+  - Семантика на данных: `raw_events` 5 вставок → 3 строки после `FINAL` (повтор позиции Kafka схлопнут, тот же оффсет с другим LSN сохранён); `stg_order_items` версия 150 после 200 проигрывает, `is_deleted = 1` скрывает строку; SCD2 закрытие версии перезаписью с большим LSN, одна текущая версия.
+  - Исключения sqlfluff: `SETTINGS` после `TTL` не разбирается парсером (валидный ClickHouse), `-- noqa: PRS` на одной строке; `name` добавлен в `ignore_words`. Комментарий, начинающийся со слова `sqlfluff`, парсер принимает за inline-директиву.
+  - `clickhouse/ddl/000_database.sql` … `005_dim_products.sql` по ADR-0006 (`raw_events`, `stg_orders`, `stg_order_items`, `dim_customers`, `dim_products`; `fact_orders` в M3), `IF NOT EXISTS`; `scripts/apply-ddl.sh` (HTTP, креды в заголовках `X-ClickHouse-User`/`X-ClickHouse-Key`, без вывода).
+  - Приёмка: `sqlfluff lint clickhouse/ddl` чистый.
+  - Закрывает: NFR-4, NFR-5.
+- [x] **1.9. `docker-compose.pi5.yml`: только ClickHouse** (~1 ч, `/deploy-pi5`)
+  - Сделано (2026-09-27): `docker-compose.pi5.yml` (`name: shopflow`, `clickhouse/clickhouse-server:25.8.33.6` с фиксированной сборкой, `mem_limit` 2816m, `stop_grace_period` 60s, healthcheck `/ping`), `clickhouse/config.d/shopflow.xml` (из memtest, ADR-0004), `clickhouse/users.d/shopflow-profile.xml` (на запрос `max_memory_usage` 1,5 ГиБ, сброс `GROUP BY`/`ORDER BY` на диск с 768 МиБ), `infra/pi5/pi5.env.example`. `scripts/ch-query.sh` и общий `scripts/lib/clickhouse-env.sh` (креды из env или `.env`, не в URL и не в `ps`). Конфиги сначала проверены на ноутбуке в контейнере с теми же монтированиями.
+  - Деплой: memtest на Pi5 уже был остановлен вместе с томами; `rsync` по ADR-0007 в `~/shopflow`; `.env` на Pi5 (`600`) с новым паролем, тот же пароль в `.env` ноутбука (сверено без вывода: `SAME`).
+  - Приёмка пройдена: `config -q` на Pi5 = `CONFIG_OK`; `up -d --wait` → `healthy` за 12 с; с ноутбука `/ping` = `Ok.`, 9000 открыт, 9009 закрыт; `ss -tlnp` на Pi5: 8123 и 9000 только на `192.168.0.151` (`docker-proxy`); `mem_limit=2952790016`, `restart=unless-stopped`; в `system.users` только `shopflow`, запрос без пароля даёт `REQUIRED_PASSWORD`; `apply-ddl.sh` дважды без ошибок, 5 таблиц с движками по ADR-0006; том `/mnt/data/docker/volumes/shopflow_clickhouse-data`; после `sudo reboot` ClickHouse поднялся сам (`uptime` 76 с), 5 таблиц на месте.
+  - Память в покое: 558–576 МиБ из 2,75 ГиБ, CPU 3–4 %.
+  - Заметка: пароль memtest (M0) передавался в командной строке и, вероятно, остался в `~/.bash_history` на Pi5; для боевого ClickHouse пароль новый.
+  - ClickHouse 25.8, `name: shopflow`, `mem_limit` 2816m, `clickhouse/config.d/shopflow.xml` по ADR-0004, профиль с `max_memory_usage`, `default` без сетевого доступа, порты на `${PI5_HOST}`. Доставка `rsync` по ADR-0007; стенд memtest остановить (`down` без `-v`), проверить `docker volume ls`.
+  - Приёмка: `config -q` проходит; `curl -s http://$PI5_HOST:8123/ping` = `Ok.`; `ss -tlnp` показывает 8123/9000 только на `$PI5_HOST`; лимит 2816m; `system.users` без сетевого `default`; `.env` на Pi5 `600`; после reboot отвечает.
+  - Закрывает: NFR-2, NFR-7, PRD 6.1, ADR-0003, ADR-0004, ADR-0007.
+- [x] **1.10. DDL на Pi5 и ручная заливка тестовых событий** (~1 ч)
+  - Сделано (2026-09-27): DDL применён в 1.9. `scripts/load_sample_events.sh` (одноразовый, в M2 заменит Spark): консьюмер печатает партицию, оффсет, ключ и значение, `jq` собирает `JSONEachRow`, ClickHouse сам извлекает `source.lsn`, `source.ts_ms` и `op` из конверта в `INSERT ... SELECT FROM input(...)`.
+  - Приёмка пройдена: первая заливка 1984 события (`customers` 332, `orders` 1649, `products`, `order_items`, `inventory` по 1), распределение `op` совпадает со сверкой 1.7, нулевых LSN нет, `event_time` 18:53–19:06 UTC 2026-09-26; транзакция 773 из 1.5 видна как оффсеты 2 и 3 с LSN 26741552 и 26741704. Повторная заливка тех же событий: `FINAL` = 1984 = число различных позиций Kafka, без `FINAL` 3636 (часть дублей уже схлопнута фоновым слиянием). TTL 30 дней в `SHOW CREATE` (1.8).
+  - `stg_order_items` на Pi5: версия 150 после 200 проигрывает (`quantity` 5, версия 200), строка с `is_deleted = 1` скрыта `FINAL`; тестовые строки (ключи ≥ 900000000) удалены.
+  - Реальные события оставлены в `raw_events`: Spark в M2 при чтении с начала запишет те же позиции, и они схлопнутся (ещё одна проверка NFR-4).
+  - `apply-ddl.sh` дважды; `scripts/load_sample_events.sh` (одноразовый, в M2 заменит Spark): события из `cdc.public.*` в `raw_events` через `JSONEachRow`, загрузка дважды; вручную две версии одной строки и удаление в `stg_order_items`.
+  - Приёмка: 5 таблиц с ожидаемыми движками; `SELECT topic, op, count() FROM raw_events FINAL GROUP BY ALL` совпадает с выгрузкой после двойной загрузки; TTL 30 дней в `SHOW CREATE`; `FINAL` по `order_item_id` даёт одну строку со старшей версией, строка с `is_deleted = 1` исчезает.
+  - Закрывает: пункт M1 про ClickHouse, NFR-4 (smoke), FR-2 (сеть ноутбук → Pi5).
+- [x] **1.11. Итоги, ревью, закрытие** (~45 мин)
+  - Сделано (2026-09-27): `docs/runbook-laptop.md` (запуск, генератор, проверки, Pi5, аварии, остановка); читающие команды прогнаны на живом стеке, процедура «слот потерян» помечена как непрогнанная (эндпоинт `/offsets` в Connect 4.3 проверен `GET`).
+  - `reviewer` (2026-09-27): блокеров нет; pytest 17 passed, ruff и sqlfluff чистые, оба compose валидны, DDL и конфиги соответствуют ADR-0005/0006/0007. Исправлено: обработка аргументов в `check_cdc_counts.sh`; в ADR-0005 записан принятый риск «секреты видны через `docker inspect`».
+  - Инцидент: `reviewer` процитировал в отчёте реальное значение `DEBEZIUM_PASSWORD` из `docker inspect`; значение слабое (совпадает с именем проекта). Ротацию пользователь решил не делать (2026-09-27): порт Postgres только на `127.0.0.1`, проект учебный. Принятый риск; вернуться перед публикацией стека за пределы ноутбука.
+  - В инструкцию `reviewer` (`.claude/agents/reviewer.md`, локально) добавлено правило: значения секретов не выводить и не цитировать, только имена переменных и канал утечки.
+  - `docs/runbook-laptop.md`, STATUS, `reviewer`, PR `milestone-1` → `master`.
+  - Приёмка: блокеров нет; pytest, ruff, sqlfluff зелёные; доказательства в STATUS.
+
+Итоги Milestone 1: цепочка Postgres → Debezium → Kafka на ноутбуке и ClickHouse на Pi5 работают и проверены по отдельности; мост между ними (Spark) строится в M2. Условия входа в M2: пользователь-writer ClickHouse для Spark (ADR-0007), подписка Spark на `cdc\.public\..*` (ADR-0005), чекпойнт на постоянном томе.
+
+**Milestone 1 завершён 2026-09-27.** PR `milestone-1` → `master` создаёт пользователь (`gh` не установлен, push по SSH из сессии Claude недоступен).
