@@ -274,3 +274,20 @@ def test_latest_per_key_debezium_replay_is_deterministic(spark):
     rows = by_pk(latest_per_key(stg_rows(df, ORDERS), ORDERS), "order_id")
     assert rows[1]["status"] == "PAID-REPLAY"
     assert rows[2]["is_deleted"] == 1 and rows[2]["version"] == 41
+
+
+def test_quarantined_newest_version_leaves_last_valid_one(spark):
+    # Dedup runs after quarantine (ADR-0008): stg keeps the last valid state of the key,
+    # the newer bad event stays in raw_events for a reload.
+    df = raw(
+        spark,
+        [
+            ({"order_id": 1}, envelope("u", after=order(1, status="paid"), lsn=60)),
+            ({"order_id": 1}, envelope("u", after=order(1, customer_id=None), lsn=61)),
+        ],
+    )
+    rows = stg_rows(df, ORDERS)
+    valid = rows.where(rows.quarantine_reason.isNull())
+    latest = latest_per_key(valid, ORDERS).collect()
+    assert [(r.status, r.version) for r in latest] == [("paid", 60)]
+    assert rows.where(rows.quarantine_reason.isNotNull()).count() == 1

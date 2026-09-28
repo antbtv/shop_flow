@@ -1,6 +1,6 @@
 # Статус ShopFlow
 
-Обновлено: 2026-09-27
+Обновлено: 2026-09-28
 
 ## Решения
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
@@ -265,6 +265,11 @@
   - A) `SIGKILL` Spark; B) ClickHouse на Pi5 остановлен на 5 мин; B2) «чёрная дыра»: DROP для ноутбука в `DOCKER-USER` на Pi5 на 15 мин; C) `down`/`up` ноутбука без `-v`; D) повторы Debezium.
   - Приёмка: после каждого `check_pipeline.sh` сходится, вывод в STATUS; в B и B2 нет цикла быстрых рестартов (ожидание `/ping` в логе), в B2 watchdog или таймаут завершили зависший батч.
   - Закрывает: NFR-6, NFR-4.
-- [ ] **2.10. Итоги, ревью, закрытие** (~45 мин)
-  - Runbook (Spark): запуск, сброс чекпойнта, `failOnDataLoss=false` после простоя дольше буфера, потеря тома Kafka, карантин и дозаливка, запрет `down -v`. STATUS, `reviewer`, PR `milestone-2` → `master`.
-  - Приёмка: блокеров нет; pytest, ruff, sqlfluff зелёные.
+- [x] **2.10. Итоги, ревью, закрытие** (~45 мин)
+  - Сделано (2026-09-28): runbook, раздел 6 «Spark» и раздел 7 «Аварии» (сброс чекпойнта, простой дольше буфера, `ContractViolation`, как ронять драйвер для проверки); `reviewer`, PR `milestone-2` → `master`.
+  - Доказательства перед ревью: `.venv/bin/python -m pytest -q` = 37 passed, `python3 -m pytest -q` = 17 passed, 1 skipped; `ruff check .` и `sqlfluff lint clickhouse/ddl` чистые; оба compose валидны.
+  - `reviewer` (2026-09-28): блокеров нет. Исправлено: в runbook устаревший потолок backoff «5 мин» → 60 с; поведение «самая новая версия PK в батче ушла в карантин → в `stg_*` последняя валидная» записано в ADR-0008 и покрыто тестом `test_quarantined_newest_version_leaves_last_valid_one` (итого 38 passed). Инцидент с хешем пароля `spark_writer` (2.3) ревьюер отметил как корректно раскрытый.
+
+Итоги Milestone 2: Spark Structured Streaming (4.0.4, один запрос `foreachBatch`) пишет все события 5 топиков в `raw_events` и последнее состояние `orders`/`order_items` в `stg_*` на Pi5; задержка p95 29 с (NFR-3); повтор батча, повторы Debezium, падение драйвера, перезагрузка ноутбука, недоступность и «чёрная дыра» Pi5 проходят без потерь и дублей в `stg_*` (NFR-4, NFR-6). Неочевидное: коннектор ClickHouse не проверяет значения (проверки в Spark), Spark 4 в ANSI-режиме (`try_cast`), права коннектора (`system.clusters`, `system.macros`, `SELECT`). Условия входа в M3: SCD2 для `dim_*` и `fact_orders` поверх `stg_*`, генерация `products`/`order_items`/`inventory`, решение по `retention.bytes` при новом потоке, дозаливка `dim_*` из `raw_events` (ADR на M3).
+
+**Milestone 2 завершён 2026-09-28.** PR `milestone-2` → `master` создаёт пользователь (push по SSH из сессии Claude недоступен).
