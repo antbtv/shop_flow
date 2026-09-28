@@ -8,10 +8,12 @@ requires-python = ">=3.12"
 line-length = 100
 target-version = "py312"
 extend-exclude = ["infra/pi5/memtest"]
+# The Spark image ships Python 3.10.
+per-file-target-version = { "spark-jobs/**" = "py310" }
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "spark-jobs"]
