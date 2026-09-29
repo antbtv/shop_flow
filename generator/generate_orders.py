@@ -1,11 +1,13 @@
-"""Synthetic OLTP load for ShopFlow: orders with status changes and changing customers (M1).
+"""Synthetic OLTP load for ShopFlow: orders with status changes, changing customers and prices.
 
 Connection comes from libpq-style env vars (POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
 POSTGRES_USER, POSTGRES_PASSWORD). Run through compose so secrets stay in .env:
 
     docker compose -f docker-compose.laptop.yml --profile generator run --rm generator --duration 60
 
-Every action is its own transaction, like independent requests to a shop backend.
+Every action is its own transaction, like independent requests to a shop backend. Actions
+run one after another: a price change commits before the next order starts, which the
+price_at_order = list price check in fact_orders relies on (ADR-0009).
 """
 
 import argparse
@@ -22,10 +24,13 @@ import psycopg
 from generator.model import (
     OPEN_STATUSES,
     Customer,
+    Product,
     change_customer,
+    change_product,
     choose_action,
     load_multiplier,
     new_customer,
+    new_product,
     next_status,
 )
 
@@ -39,6 +44,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--duration", type=float, default=0, help="seconds to run, 0 = forever")
     p.add_argument("--seed", type=int, default=None, help="random seed for reproducible runs")
     p.add_argument("--customers", type=int, default=50, help="seed customers if table is empty")
+    p.add_argument("--products", type=int, default=100, help="top up the catalog to this size")
     p.add_argument(
         "--no-seasonality", action="store_true", help="constant rate, no hourly multiplier"
     )
@@ -71,6 +77,25 @@ def seed_customers(conn: psycopg.Connection, n: int, rng: random.Random) -> None
         for _ in range(n):
             insert_customer(conn, new_customer(rng))
     log.info("seeded %d customers", n)
+
+
+def insert_product(conn: psycopg.Connection, p: Product) -> None:
+    conn.execute(
+        "INSERT INTO products (name, category, price) VALUES (%s, %s, %s)",
+        (p.name, p.category, p.price),
+    )
+
+
+def seed_products(conn: psycopg.Connection, n: int, rng: random.Random) -> None:
+    """Top up rather than seed only an empty table: a leftover test row must not block it."""
+    (count,) = conn.execute("SELECT count(*) FROM products").fetchone()
+    missing = n - count
+    if missing <= 0:
+        return
+    with conn.transaction():
+        for _ in range(missing):
+            insert_product(conn, new_product(rng))
+    log.info("seeded %d products", missing)
 
 
 def random_customer_id(conn: psycopg.Connection) -> int | None:
@@ -132,11 +157,36 @@ def add_customer(conn: psycopg.Connection, rng: random.Random) -> bool:
     return True
 
 
+def update_product(conn: psycopg.Connection, rng: random.Random) -> bool:
+    with conn.transaction():
+        row = conn.execute(
+            "SELECT product_id, name, category, price FROM products "
+            "ORDER BY random() LIMIT 1 FOR UPDATE SKIP LOCKED"
+        ).fetchone()
+        if row is None:
+            return False
+        product_id, *fields = row
+        changed = change_product(Product(*fields), rng)
+        conn.execute(
+            "UPDATE products SET category = %s, price = %s, updated_at = now() "
+            "WHERE product_id = %s",
+            (changed.category, changed.price, product_id),
+        )
+    return True
+
+
+def add_product(conn: psycopg.Connection, rng: random.Random) -> bool:
+    insert_product(conn, new_product(rng))
+    return True
+
+
 ACTIONS = {
     "new_order": new_order,
     "advance_order": advance_order,
     "update_customer": update_customer,
     "new_customer": add_customer,
+    "update_product": update_product,
+    "new_product": add_product,
 }
 
 
@@ -154,6 +204,7 @@ def run(args: argparse.Namespace) -> Counter:
 
     with connect() as conn:
         seed_customers(conn, args.customers, rng)
+        seed_products(conn, args.products, rng)
         started = time.monotonic()
         last_report = started
         while not stop:
