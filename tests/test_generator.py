@@ -14,16 +14,21 @@ from generator.model import (
     STATUSES,
     TRANSITIONS,
     Customer,
+    OrderLine,
     Product,
+    StockRow,
     change_customer,
     change_price,
     change_product,
     choose_action,
+    choose_order_lines,
+    initial_stock,
     is_valid_transition,
     load_multiplier,
     new_customer,
     new_product,
     next_status,
+    restock_amount,
 )
 
 
@@ -155,3 +160,61 @@ def test_change_product_changes_exactly_one_scd2_attribute():
         category_changes += changed.category != current.category
         current = changed
     assert 0.02 < category_changes / 2000 < 0.08
+
+
+def _stock(rng: random.Random, n: int = 20) -> list[StockRow]:
+    return [
+        StockRow(rng.randint(1, 8), rng.randint(1, 3), rng.randint(0, 3), Decimal("10.00") + i)
+        for i in range(n)
+    ]
+
+
+def test_order_lines_are_distinct_products_within_stock():
+    rng = random.Random(21)
+    for _ in range(1000):
+        candidates = _stock(rng)
+        by_row = {(r.product_id, r.warehouse_id, r.price): r for r in candidates}
+        lines = choose_order_lines(candidates, rng)
+        assert len(lines) <= 5
+        assert len({line.product_id for line in lines}) == len(lines)
+        for line in lines:
+            row = by_row[(line.product_id, line.warehouse_id, line.price)]
+            assert 1 <= line.quantity <= min(3, row.quantity)
+            assert line.price == row.price  # price_at_order = list price (ADR-0009)
+
+
+def test_order_lines_cover_one_to_five_when_stock_allows():
+    rng = random.Random(22)
+    many = [StockRow(i, 1, 100, Decimal("5.00")) for i in range(1, 21)]
+    sizes = Counter(len(choose_order_lines(many, rng)) for _ in range(2000))
+    assert set(sizes) == {1, 2, 3, 4, 5}
+
+
+def test_no_lines_without_stock():
+    rng = random.Random(23)
+    assert choose_order_lines([], rng) == []
+    empty = [StockRow(1, 1, 0, Decimal("5.00")), StockRow(2, 2, 0, Decimal("7.00"))]
+    assert choose_order_lines(empty, rng) == []
+
+
+def test_order_line_takes_first_warehouse_of_a_product():
+    rows = [StockRow(1, 2, 5, Decimal("5.00")), StockRow(1, 3, 5, Decimal("5.00"))]
+    for seed in range(50):
+        lines = choose_order_lines(rows, random.Random(seed))
+        assert lines == [OrderLine(1, 2, lines[0].quantity, Decimal("5.00"))]
+
+
+def test_restock_roughly_balances_consumption():
+    rng = random.Random(24)
+    many = [StockRow(i, 1, 100, Decimal("5.00")) for i in range(1, 21)]
+    units_per_order = sum(
+        line.quantity for _ in range(2000) for line in choose_order_lines(many, rng)
+    ) / 2000
+    consumed = ACTION_WEIGHTS["new_order"] * units_per_order
+    supplied = ACTION_WEIGHTS["restock"] * sum(restock_amount(rng) for _ in range(2000)) / 2000
+    assert 0.7 < supplied / consumed < 1.4
+
+
+def test_initial_stock_is_positive():
+    rng = random.Random(25)
+    assert all(initial_stock(rng) > 0 for _ in range(500))

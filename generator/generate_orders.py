@@ -1,4 +1,4 @@
-"""Synthetic OLTP load for ShopFlow: orders with status changes, changing customers and prices.
+"""Synthetic OLTP load for ShopFlow: orders with items, status changes, customers, prices, stock.
 
 Connection comes from libpq-style env vars (POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
 POSTGRES_USER, POSTGRES_PASSWORD). Run through compose so secrets stay in .env:
@@ -23,15 +23,20 @@ import psycopg
 
 from generator.model import (
     OPEN_STATUSES,
+    WAREHOUSES,
     Customer,
     Product,
+    StockRow,
     change_customer,
     change_product,
     choose_action,
+    choose_order_lines,
+    initial_stock,
     load_multiplier,
     new_customer,
     new_product,
     next_status,
+    restock_amount,
 )
 
 log = logging.getLogger("generator")
@@ -79,11 +84,17 @@ def seed_customers(conn: psycopg.Connection, n: int, rng: random.Random) -> None
     log.info("seeded %d customers", n)
 
 
-def insert_product(conn: psycopg.Connection, p: Product) -> None:
-    conn.execute(
-        "INSERT INTO products (name, category, price) VALUES (%s, %s, %s)",
+def insert_product(conn: psycopg.Connection, p: Product, rng: random.Random) -> None:
+    """A product and its stock in every warehouse, in the caller's transaction."""
+    (product_id,) = conn.execute(
+        "INSERT INTO products (name, category, price) VALUES (%s, %s, %s) RETURNING product_id",
         (p.name, p.category, p.price),
-    )
+    ).fetchone()
+    for warehouse_id in WAREHOUSES:
+        conn.execute(
+            "INSERT INTO inventory (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)",
+            (product_id, warehouse_id, initial_stock(rng)),
+        )
 
 
 def seed_products(conn: psycopg.Connection, n: int, rng: random.Random) -> None:
@@ -94,8 +105,28 @@ def seed_products(conn: psycopg.Connection, n: int, rng: random.Random) -> None:
         return
     with conn.transaction():
         for _ in range(missing):
-            insert_product(conn, new_product(rng))
+            insert_product(conn, new_product(rng), rng)
     log.info("seeded %d products", missing)
+
+
+def seed_inventory(conn: psycopg.Connection, rng: random.Random) -> None:
+    """Stock for (product, warehouse) pairs that have none, e.g. products from before M3."""
+    missing = conn.execute(
+        "SELECT p.product_id, w.warehouse_id FROM products p "
+        "CROSS JOIN unnest(%s::int[]) AS w(warehouse_id) "
+        "LEFT JOIN inventory i USING (product_id, warehouse_id) "
+        "WHERE i.product_id IS NULL ORDER BY 1, 2",
+        (list(WAREHOUSES),),
+    ).fetchall()
+    if not missing:
+        return
+    with conn.transaction():
+        for product_id, warehouse_id in missing:
+            conn.execute(
+                "INSERT INTO inventory (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)",
+                (product_id, warehouse_id, initial_stock(rng)),
+            )
+    log.info("seeded %d inventory rows", len(missing))
 
 
 def random_customer_id(conn: psycopg.Connection) -> int | None:
@@ -106,12 +137,34 @@ def random_customer_id(conn: psycopg.Connection) -> int | None:
 
 
 def new_order(conn: psycopg.Connection, rng: random.Random) -> bool:
-    customer_id = random_customer_id(conn)
-    if customer_id is None:
-        return False
-    conn.execute(
-        "INSERT INTO orders (customer_id, status) VALUES (%s, 'created')", (customer_id,)
-    )
+    """Order, its items and the stock write-off in one transaction; no stock, no order."""
+    with conn.transaction():
+        customer_id = random_customer_id(conn)
+        if customer_id is None:
+            return False
+        rows = conn.execute(
+            "SELECT i.product_id, i.warehouse_id, i.quantity, p.price "
+            "FROM inventory i JOIN products p USING (product_id) WHERE i.quantity > 0 "
+            "ORDER BY random() LIMIT 20 FOR UPDATE OF i SKIP LOCKED"
+        ).fetchall()
+        lines = choose_order_lines([StockRow(*row) for row in rows], rng)
+        if not lines:
+            return False
+        (order_id,) = conn.execute(
+            "INSERT INTO orders (customer_id, status) VALUES (%s, 'created') RETURNING order_id",
+            (customer_id,),
+        ).fetchone()
+        for line in lines:
+            conn.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_order) "
+                "VALUES (%s, %s, %s, %s)",
+                (order_id, line.product_id, line.quantity, line.price),
+            )
+            conn.execute(
+                "UPDATE inventory SET quantity = quantity - %s, updated_at = now() "
+                "WHERE product_id = %s AND warehouse_id = %s",
+                (line.quantity, line.product_id, line.warehouse_id),
+            )
     return True
 
 
@@ -176,7 +229,26 @@ def update_product(conn: psycopg.Connection, rng: random.Random) -> bool:
 
 
 def add_product(conn: psycopg.Connection, rng: random.Random) -> bool:
-    insert_product(conn, new_product(rng))
+    with conn.transaction():
+        insert_product(conn, new_product(rng), rng)
+    return True
+
+
+def restock(conn: psycopg.Connection, rng: random.Random) -> bool:
+    """Refill one of the ten emptiest shelves."""
+    with conn.transaction():
+        row = conn.execute(
+            "SELECT product_id, warehouse_id FROM "
+            "(SELECT product_id, warehouse_id FROM inventory ORDER BY quantity LIMIT 10) low "
+            "ORDER BY random() LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            "UPDATE inventory SET quantity = quantity + %s, updated_at = now() "
+            "WHERE product_id = %s AND warehouse_id = %s",
+            (restock_amount(rng), *row),
+        )
     return True
 
 
@@ -187,6 +259,7 @@ ACTIONS = {
     "new_customer": add_customer,
     "update_product": update_product,
     "new_product": add_product,
+    "restock": restock,
 }
 
 
@@ -205,6 +278,7 @@ def run(args: argparse.Namespace) -> Counter:
     with connect() as conn:
         seed_customers(conn, args.customers, rng)
         seed_products(conn, args.products, rng)
+        seed_inventory(conn, rng)
         started = time.monotonic()
         last_report = started
         while not stop:

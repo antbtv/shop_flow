@@ -1,4 +1,4 @@
-"""Pure load-generation logic: order status transitions, synthetic customers and products.
+"""Pure load-generation logic: order status transitions, customers, products, order lines, stock.
 
 No database access here, so it is unit-tested without Postgres.
 """
@@ -36,18 +36,26 @@ CATEGORIES: dict[str, tuple[tuple[str, ...], tuple[int, int]]] = {
 BRANDS = ("Aurora", "Nord", "Volga", "Taiga", "Luna", "Sever")
 MIN_PRICE = Decimal("1.00")
 MAX_PRICE = Decimal("99999999.99")  # NUMERIC(10,2)
+WAREHOUSES = (1, 2, 3)
+INITIAL_STOCK = (20, 200)
+RESTOCK = (50, 200)
+LINES_PER_ORDER = (1, 5)
+QUANTITY_PER_LINE = (1, 3)
 CATEGORY_CHANGE_SHARE = 0.05  # rare re-categorization, the rest are price changes
 SALE_SHARE = 0.3  # of price changes: a sale discount instead of a small drift
 
 # Relative weight of each action per tick, sums to 1: status changes dominate, like a real
 # shop. Price changes are rarer than orders but frequent enough for SCD2 history (ADR-0009).
+# Restock balances consumption: an order takes ~3 lines x ~2 units = ~6 units, 0.40 x 6 = 2.4
+# units per action, a restock adds ~125 units, so ~0.02 keeps stock roughly flat.
 ACTION_WEIGHTS: dict[str, float] = {
     "new_order": 0.40,
-    "advance_order": 0.45,
+    "advance_order": 0.43,
     "update_customer": 0.08,
     "new_customer": 0.04,
     "update_product": 0.025,
     "new_product": 0.005,
+    "restock": 0.02,
 }
 
 # Hourly load multiplier (UTC+3 shop): quiet night, evening peak.
@@ -69,6 +77,24 @@ class Customer:
 class Product:
     name: str
     category: str
+    price: Decimal
+
+
+@dataclass(frozen=True)
+class StockRow:
+    """An inventory row that can serve an order line, with the product's current price."""
+
+    product_id: int
+    warehouse_id: int
+    quantity: int
+    price: Decimal
+
+
+@dataclass(frozen=True)
+class OrderLine:
+    product_id: int
+    warehouse_id: int
+    quantity: int
     price: Decimal
 
 
@@ -157,3 +183,28 @@ def change_product(current: Product, rng: random.Random) -> Product:
         category = rng.choice([c for c in sorted(CATEGORIES) if c != current.category])
         return replace(current, category=category)
     return replace(current, price=change_price(current.price, rng))
+
+
+def initial_stock(rng: random.Random) -> int:
+    return rng.randint(*INITIAL_STOCK)
+
+
+def restock_amount(rng: random.Random) -> int:
+    return rng.randint(*RESTOCK)
+
+
+def choose_order_lines(candidates: list[StockRow], rng: random.Random) -> list[OrderLine]:
+    """Pick 1-5 lines from shuffled in-stock rows: distinct products, one warehouse each,
+    quantity 1-3 but never above the stock, price = current list price (ADR-0009)."""
+    wanted = rng.randint(*LINES_PER_ORDER)
+    lines: list[OrderLine] = []
+    seen: set[int] = set()
+    for row in candidates:
+        if len(lines) == wanted:
+            break
+        if row.product_id in seen or row.quantity <= 0:
+            continue
+        seen.add(row.product_id)
+        quantity = min(rng.randint(*QUANTITY_PER_LINE), row.quantity)
+        lines.append(OrderLine(row.product_id, row.warehouse_id, quantity, row.price))
+    return lines
