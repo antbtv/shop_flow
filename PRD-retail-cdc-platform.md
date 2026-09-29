@@ -139,8 +139,9 @@ CREATE TABLE stg_orders (
     order_id    UInt64,
     customer_id UInt64,
     status      LowCardinality(String),
-    created_at  DateTime64(3, 'UTC'),
+    created_at  DateTime64(6, 'UTC'),  -- микросекунды для ASOF JOIN к dim_products (ADR-0009)
     updated_at  DateTime64(3, 'UTC'),
+    event_time  DateTime64(3, 'UTC'),  -- source.ts_ms, окно лага FR-8/FR-9 (ADR-0009)
     version     UInt64,  -- source.lsn
     is_deleted  UInt8
 ) ENGINE = ReplacingMergeTree(version, is_deleted)
@@ -152,28 +153,30 @@ CREATE TABLE stg_order_items (
     product_id     UInt64,
     quantity       Int32,   -- как INT в Postgres: отрицательное видно DQ (ADR-0008)
     price_at_order Decimal(10, 2),
+    event_time     DateTime64(3, 'UTC'),
     version        UInt64,  -- source.lsn
     is_deleted     UInt8
 ) ENGINE = ReplacingMergeTree(version, is_deleted)
 ORDER BY order_item_id;
 
--- SCD2-измерения. Закрытие версии = та же строка (id, valid_from) с большим version.
+-- SCD2-измерения: цели refreshable MV, полный пересчёт из журналов stg_*_versions
+-- в порядке LSN (ADR-0009). Прямые записи стираются следующим refresh.
 CREATE TABLE dim_customers (
     customer_id UInt64,
     name        String,
     address     String,
-    segment     String,
+    segment     LowCardinality(String),
     valid_from  DateTime64(6, 'UTC'),            -- source.ts_us
     valid_to    Nullable(DateTime64(6, 'UTC')),
     is_current  UInt8,
-    version     UInt64                           -- source.lsn последнего события по строке
+    version     UInt64                           -- source.lsn строки версии
 ) ENGINE = ReplacingMergeTree(version)
 ORDER BY (customer_id, valid_from);
 
 CREATE TABLE dim_products (
     product_id UInt64,
     name       String,
-    category   String,
+    category   LowCardinality(String),
     price      Decimal(10, 2),
     valid_from DateTime64(6, 'UTC'),
     valid_to   Nullable(DateTime64(6, 'UTC')),
@@ -182,8 +185,17 @@ CREATE TABLE dim_products (
 ) ENGINE = ReplacingMergeTree(version)
 ORDER BY (product_id, valid_from);
 
--- fact_orders (M3): представление или refreshable MV поверх stg_orders JOIN stg_order_items
--- по order_id. Денормализация в стриме отклонена: версия из двух топиков теряет обновления.
+-- M3 (ADR-0009, точный DDL в clickhouse/ddl/):
+-- stg_customer_versions, stg_product_versions: журнал версий из Spark,
+--   RMT(version) ORDER BY (id, valid_from = source.ts_us), is_snapshot, is_deleted, event_time.
+-- stg_order_status_history: (order_id, status, changed_at, is_snapshot, version),
+--   RMT(version) ORDER BY (order_id, status, version); витрина берёт min(changed_at).
+-- stg_inventory: RMT(version, is_deleted) ORDER BY (product_id, warehouse_id), event_time.
+-- fact_orders: VIEW, зерно — позиция заказа: stg_order_items FINAL JOIN stg_orders FINAL,
+--   ASOF LEFT JOIN dim_products по created_at >= valid_from (категория и цена на момент заказа).
+--   Денормализация в стриме отклонена: версия из двух топиков теряет обновления.
+-- mart_revenue_daily, mart_funnel_daily: refreshable MV, полный пересчёт каждые 2 мин,
+--   цепочка DEPENDS ON dim_products_mv; refreshed_at и source_watermark для замера NFR-3.
 ```
 
 ## 6. Архитектура

@@ -13,6 +13,7 @@
 - ClickHouse: версия = `source.lsn` только для таблиц «одна строка Postgres»; `raw_events` по позиции Kafka; `stg_orders` + `stg_order_items`, `fact_orders` поверх них в M3, см. `docs/adr/0006-clickhouse-schema-idempotency.md`
 - Деплой Pi5: `rsync` по явному списку путей без `.env`, отдельный `.env` на Pi5, compose `name: shopflow`, см. `docs/adr/0007-pi5-deploy.md`
 - Spark: один запрос `foreachBatch` → `raw_events` + `stg_orders`/`stg_order_items`, Spark 4.0.4 + коннектор ClickHouse, raw fail-fast, stg карантин, таймауты и watchdog, см. `docs/adr/0008-spark-streaming-job.md`
+- Модель данных M3: SCD2 пересчётом журнала версий из Spark (refreshable MV, порядок по LSN), история статусов с первым временем перехода, `fact_orders` — представление с `ASOF JOIN`, витрины — refreshable MV цепочкой, дозаливка Spark batch из `raw_events`, см. `docs/adr/0009-scd2-fact-marts.md`
 - Репозиторий: `docs/` и PRD в git; `.claude/`, `CLAUDE.md`, `.env` локально.
 
 ## Milestone 0: подготовка окружения
@@ -291,8 +292,10 @@
 - [x] **3.0. Ветка** (~10 мин)
   - Сделано (2026-09-29): PR #3 `milestone-2` → `master` влит пользователем, `master` fast-forward до `47c75b2`, ветка `milestone-3` от `master`.
   - Приёмка пройдена: `git log master..milestone-2` пусто, текущая ветка `milestone-3`.
-- [ ] **3.1. ADR-0009 «SCD2, факт и витрины», ревью `architect`** (~1 ч)
-  - Пункты 1–7 выше; PRD 5.2 и раздел 10.
+- [x] **3.1. ADR-0009 «SCD2, факт и витрины», ревью `architect`** (~1 ч)
+  - Сделано (2026-09-29): ADR-0009 принят с правками (4 блокера, 7 желательных), PRD 5.2 обновлён, в ADR-0006 правила обработчика SCD2 помечены как заменённые.
+  - Блокеры: окно SCD2 по LSN, а не по `ts_us` (часы ноутбука), явная рамка окна и `toNullable` для `leadInFrame`, отбрасывание строк без изменений до `leadInFrame`; история статусов с ключом `(order_id, status, version)` и `min(changed_at)` (снапшот и повтор статуса не перетирают переход), воронка монотонная; свои функции схлопывания для журналов (`latest_per_key` сжал бы историю); `stg_orders.created_at` → `DateTime64(6)` и `join_use_nulls = 1` для ASOF.
+  - Желательные: цепочка `DEPENDS ON` (`dim_products_mv` → выручка → воронка), лимит витрин 768 МиБ, `refresh_retries`; `refreshed_at` и `source_watermark` в витринах для NFR-3; `event_time` в `stg_*` и журналах (окно лага FR-8/FR-9 в M4, DQ читает `stg_*`, а не факт); первая версия из снапшота с `valid_from = 1970-01-01`; проверка фильтра дозаливки по `query_log`; порог перехода `fact_orders` на таблицу.
   - Приёмка: вердикт «принять» или «принять с правками», правки внесены.
   - Закрывает: подготовку к FR-3, FR-4, FR-5.
 - [ ] **3.2. Генератор: каталог товаров** (~1 ч)
@@ -308,8 +311,9 @@
   - Приёмка: байты в сутки по 5 топикам и буфер NFR-6 = min(7 дней, 1 ГиБ / объём) записаны; решение в ADR-0008/0009.
   - Риск: `order_items` с `REPLICA IDENTITY FULL` может стать самым тяжёлым топиком.
 - [ ] **3.5. DDL новых таблиц** (~45 мин, `/clickhouse-ddl`, Pi5)
-  - Миграции `007+` по ADR-0009, гранты в `create-ch-users.sh`.
-  - Приёмка: `sqlfluff lint clickhouse/ddl` чистый; `apply-ddl.sh` и `create-ch-users.sh` дважды без ошибок; `SHOW GRANTS FOR spark_writer` только нужные таблицы.
+  - Миграции `007+` по ADR-0009: журналы версий, `stg_order_status_history`, `stg_inventory`, `event_time` в `stg_orders`/`stg_order_items`, `stg_orders.created_at` → `DateTime64(6)`. Гранты в `create-ch-users.sh`. MV и `fact_orders` — в 3.8–3.11.
+  - Сначала на временном ClickHouse 25.8 на ноутбуке (как в 1.8): права определителя и атомарность refresh без `APPEND` с TO-таблицей; `DEPENDS ON` при цепочке; ASOF JOIN с `DateTime64(3)`/`(6)`; `leadInFrame` с рамкой и `toNullable`. Результаты в ADR-0009.
+  - Приёмка: `sqlfluff lint clickhouse/ddl` чистый; `apply-ddl.sh` и `create-ch-users.sh` дважды без ошибок; `SHOW GRANTS FOR spark_writer` только нужные таблицы; проверки стенда записаны.
 - [ ] **3.6. Преобразования Spark и тесты** (~1 ч)
   - `StgSpec` для `customers`, `products`, `inventory`, история статусов; `valid_from` из `source.ts_us`; правила ADR-0006 (схлопывание `(id, ts_us)` до max LSN, `d` закрывает, `r` без изменений не открывает).
   - Приёмка: `.venv/bin/python -m pytest -q` зелёный, случаи: два UPDATE в транзакции, DELETE, `op=r` без изменений, переход статуса, повтор Debezium.
