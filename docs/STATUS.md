@@ -1,6 +1,6 @@
 # Статус ShopFlow
 
-Обновлено: 2026-09-28
+Обновлено: 2026-09-29
 
 ## Решения
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
@@ -273,3 +273,68 @@
 Итоги Milestone 2: Spark Structured Streaming (4.0.4, один запрос `foreachBatch`) пишет все события 5 топиков в `raw_events` и последнее состояние `orders`/`order_items` в `stg_*` на Pi5; задержка p95 29 с (NFR-3); повтор батча, повторы Debezium, падение драйвера, перезагрузка ноутбука, недоступность и «чёрная дыра» Pi5 проходят без потерь и дублей в `stg_*` (NFR-4, NFR-6). Неочевидное: коннектор ClickHouse не проверяет значения (проверки в Spark), Spark 4 в ANSI-режиме (`try_cast`), права коннектора (`system.clusters`, `system.macros`, `SELECT`). Условия входа в M3: SCD2 для `dim_*` и `fact_orders` поверх `stg_*`, генерация `products`/`order_items`/`inventory`, решение по `retention.bytes` при новом потоке, дозаливка `dim_*` из `raw_events` (ADR на M3).
 
 **Milestone 2 завершён 2026-09-28.** PR `milestone-2` → `master` создаёт пользователь (push по SSH из сессии Claude недоступен).
+
+## Milestone 3: моделирование данных
+
+Ветка: `milestone-3`. План подтверждён 2026-09-29. Оценка ~12 ч. Шаги на Pi5 выполняет пользователь.
+Скоуп: SCD2 `dim_customers`/`dim_products` (FR-3), `fact_orders` поверх `stg_*`, генерация `products`/`order_items`/`inventory`, дневные витрины выручки (FR-4) и воронки (FR-5), решение по `retention.bytes`, дозаливка `dim_*` из `raw_events`. Представления для FR-6/FR-7 перенесены в M5 (PRD, раздел 10).
+
+До кода `architect` проверяет ADR-0009:
+1. Источник `valid_from` и закрытие версии SCD2. Кандидат: Spark пишет журнал версий `stg_<table>_versions` (ключ `(id, valid_from)`, RMT по LSN), `dim_*` пересчитывает refreshable MV (`valid_to` через `leadInFrame`). Альтернативы: чтение текущей версии из ClickHouse по ключам батча; состояние Spark (`transformWithState`).
+2. Зерно и материализация `fact_orders`: позиция заказа, refreshable MV или представление с `FINAL`, `ASOF JOIN` к `dim_products`.
+3. Агрегаты: refreshable MV (инкрементальная MV поверх RMT считает повторы и обновления дважды); полный пересчёт или последние N дней при ~2 млн позиций за 2 недели (ADR-0004).
+4. Воронка: `stg_order_status_history` из Spark (ключ `(order_id, status)`, время из `source.ts_ms`), а не разбор `raw_events` в ClickHouse (ADR-0008).
+5. Новые stg: `stg_inventory`, журналы версий `customers`/`products`.
+6. Дозаливка `dim_*`: Spark batch из `raw_events` с теми же `transforms.py` или сброс чекпойнта (первые события уходят из Kafka ~2026-10-03).
+7. SQL SECURITY refreshable MV, гранты `spark_writer`, память и CPU refresh в бюджете ClickHouse, задержка витрин = NFR-3 + период refresh.
+
+- [x] **3.0. Ветка** (~10 мин)
+  - Сделано (2026-09-29): PR #3 `milestone-2` → `master` влит пользователем, `master` fast-forward до `47c75b2`, ветка `milestone-3` от `master`.
+  - Приёмка пройдена: `git log master..milestone-2` пусто, текущая ветка `milestone-3`.
+- [ ] **3.1. ADR-0009 «SCD2, факт и витрины», ревью `architect`** (~1 ч)
+  - Пункты 1–7 выше; PRD 5.2 и раздел 10.
+  - Приёмка: вердикт «принять» или «принять с правками», правки внесены.
+  - Закрывает: подготовку к FR-3, FR-4, FR-5.
+- [ ] **3.2. Генератор: каталог товаров** (~1 ч)
+  - Засев `products` (категории, цены), изменения цен (обычные и «распродажа»), редкая смена категории; `updated_at = now()` при каждом UPDATE.
+  - Приёмка: pytest зелёный; прогон 60 с даёт в `cdc.public.products` события `u` с `before.price ≠ after.price`; `updated_at` сдвигается у всех UPDATE.
+  - Закрывает: FR-1, подготовку к FR-3.
+- [ ] **3.3. Генератор: `order_items` и `inventory`** (~1 ч)
+  - 1–5 позиций в одной транзакции с заказом, `price_at_order` = текущая цена; засев остатков по складам, списание при заказе, пополнение.
+  - Приёмка: pytest; заказов без позиций, созданных после старта, 0; `min(inventory.quantity) >= 0`; `price_at_order` = `products.price` на момент вставки.
+  - Риск: старые заказы M1/M2 без позиций, это не ошибка DQ.
+- [ ] **3.4. Объём Kafka и `retention.bytes`** (~45 мин)
+  - Генератор 30 мин `--rate 5`, пересчёт на штатный режим.
+  - Приёмка: байты в сутки по 5 топикам и буфер NFR-6 = min(7 дней, 1 ГиБ / объём) записаны; решение в ADR-0008/0009.
+  - Риск: `order_items` с `REPLICA IDENTITY FULL` может стать самым тяжёлым топиком.
+- [ ] **3.5. DDL новых таблиц** (~45 мин, `/clickhouse-ddl`, Pi5)
+  - Миграции `007+` по ADR-0009, гранты в `create-ch-users.sh`.
+  - Приёмка: `sqlfluff lint clickhouse/ddl` чистый; `apply-ddl.sh` и `create-ch-users.sh` дважды без ошибок; `SHOW GRANTS FOR spark_writer` только нужные таблицы.
+- [ ] **3.6. Преобразования Spark и тесты** (~1 ч)
+  - `StgSpec` для `customers`, `products`, `inventory`, история статусов; `valid_from` из `source.ts_us`; правила ADR-0006 (схлопывание `(id, ts_us)` до max LSN, `d` закрывает, `r` без изменений не открывает).
+  - Приёмка: `.venv/bin/python -m pytest -q` зелёный, случаи: два UPDATE в транзакции, DELETE, `op=r` без изменений, переход статуса, повтор Debezium.
+  - Закрывает: FR-3 (логика), NFR-4.
+- [ ] **3.7. Подключение к streaming job и сверка** (~1 ч)
+  - `foreachBatch` пишет новые таблицы; `check_pipeline.sh` расширен.
+  - Приёмка (генератор остановлен): `stg_inventory FINAL` = Postgres (строки, `sum(quantity)`); число версий = числу различных `(id, ts_us)` изменений атрибутов в `raw_events`.
+- [ ] **3.8. `dim_customers`, `dim_products` и дозаливка** (~1 ч, Pi5)
+  - Материализация SCD2 по ADR-0009, дозаливка истории из `raw_events`.
+  - Приёмка: одна `is_current=1` на живой ключ, их число = `count(*)` Postgres; атрибуты текущей версии = Postgres; нет разрывов и перекрытий (`valid_to` i-й = `valid_from` (i+1)-й); ручной тест: три смены адреса, две в одной транзакции.
+  - Закрывает: FR-3.
+- [ ] **3.9. `fact_orders`** (~1 ч)
+  - Зерно «позиция заказа», `ASOF JOIN` к `dim_products`.
+  - Приёмка (старше окна лага 10 мин): строки и `sum(quantity * price_at_order)` = Postgres; строк с `price_at_order` ≠ цены `dim_products` на момент заказа 0 (сквозная проверка SCD2).
+- [ ] **3.10. Витрина выручки FR-4** (~45 мин)
+  - `mart_revenue_daily` (день, категория, выручка, заказы, позиции), refreshable MV.
+  - Приёмка: по дням старше окна лага = запросу к Postgres; время refresh (`system.view_refreshes`) и память записаны.
+  - Закрывает: FR-4.
+- [ ] **3.11. Витрина воронки FR-5** (~45 мин)
+  - `mart_funnel_daily`: created → paid → delivered, конверсии, медиана времени до оплаты.
+  - Приёмка: `created` по дням = Postgres по `created_at`; у заказов в `paid`/`shipped`/`delivered` есть переход `paid`, у `delivered` есть `delivered` (пропусков 0).
+  - Закрывает: FR-5. Риск: история до 3.7 только из дозаливки `raw_events`.
+- [ ] **3.12. Нагрузка на Pi5 и задержка витрин** (~45 мин, Pi5)
+  - Генератор 30 мин `--rate 5` со всеми refresh.
+  - Приёмка: `LoadAverage1` и RSS ClickHouse в рамках ADR-0004; парты не растут; p95 refresh < периода; задержка `stg_*` < 5 мин (NFR-3); задержка витрин записана.
+- [ ] **3.13. Итоги, ревью, закрытие** (~45 мин)
+  - Runbook, STATUS, `dq-tester` (предварительно FR-9 по `fact_orders`), `reviewer`, PR.
+  - Приёмка: pytest, ruff, sqlfluff зелёные; блокеров у `reviewer` нет.
