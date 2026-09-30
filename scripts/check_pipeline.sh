@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Kafka -> ClickHouse check (ADR-0008). For each CDC topic, every Kafka position in
 # [earliest, latest) must be in raw_events exactly once after dedup (uniqExact, no FINAL).
-# stg_orders and stg_order_items must match Postgres: row count and cheap checksums.
-# Also prints the ingest lag of the last 10 minutes.
+# stg_orders, stg_order_items and stg_inventory must match Postgres: row count and cheap
+# checksums. The SCD2 journals must hold one row per (key, source.ts_us) of raw_events, and the
+# status history the current status of every order changed since it started (ADR-0009): both
+# only from the first event in the journal, older history comes from the backfill (3.8).
+# Also prints the ingest lag of the last 10 minutes. CLICKHOUSE_URL may point to another server.
 # Usage: scripts/check_pipeline.sh   Exit 1 on any mismatch.
 # Exact only when the job has caught up: stop the generator and wait one trigger (30 s).
 set -euo pipefail
@@ -58,6 +61,34 @@ compare "order_items: rows, sum(qty), sum(qty*price)" \
     "$(scripts/ch-query.sh "SELECT count(), sum(quantity), toDecimalString(sum(quantity * price_at_order), 2)
         FROM stg_order_items FINAL WHERE is_deleted = 0 FORMAT CustomSeparated
         SETTINGS format_custom_field_delimiter = ' '")"
+compare "inventory: rows, sum(quantity)" \
+    "$(psql "SELECT count(*), coalesce(sum(quantity), 0) FROM inventory")" \
+    "$(scripts/ch-query.sh "SELECT count(), sum(quantity) FROM stg_inventory FINAL WHERE is_deleted = 0
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+
+printf '\n%-40s %24s %24s  %s\n' check raw_events clickhouse verdict
+for pair in customers:stg_customer_versions products:stg_product_versions; do
+    topic=cdc.public.${pair%%:*} journal=${pair##*:}
+    since=$(scripts/ch-query.sh "SELECT toString(min(event_time)) FROM $journal")
+    if [[ $since == 1970-01-01* ]]; then
+        printf '%-40s %24s %24s  %s\n' "$journal (key, ts_us)" - 0 EMPTY
+        continue
+    fi
+    compare "$journal (key, ts_us) since ${since% *}" \
+        "$(scripts/ch-query.sh "SELECT uniqExact(event_key, JSONExtract(payload, 'source', 'ts_us', 'Int64'))
+            FROM raw_events WHERE topic = '$topic' AND op IN ('c', 'u', 'd', 'r')
+              AND event_time >= '$since'")" \
+        "$(scripts/ch-query.sh "SELECT count() FROM $journal FINAL WHERE event_time >= '$since'")"
+done
+since=$(scripts/ch-query.sh "SELECT toString(min(changed_at)) FROM stg_order_status_history")
+if [[ $since == 1970-01-01* ]]; then
+    printf '%-40s %24s %24s  %s\n' "status history" - 0 EMPTY
+else
+    compare "orders without current status in history" 0 \
+        "$(scripts/ch-query.sh "SELECT count() FROM stg_orders FINAL
+            WHERE is_deleted = 0 AND event_time >= '$since'
+              AND (order_id, status) NOT IN (SELECT order_id, status FROM stg_order_status_history)")"
+fi
 
 echo
 echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"

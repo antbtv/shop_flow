@@ -1,7 +1,8 @@
 """Streaming job: Debezium topics in Kafka -> ClickHouse on Pi5 (ADR-0008).
 
 One query, one checkpoint. Each micro-batch is written with keys from ADR-0006, so a replayed
-batch (same batchId, same offset range after a restart) collapses in ClickHouse.
+batch (same batchId, same offset range after a restart) collapses in ClickHouse. Per batch:
+raw_events, then stg_* and the SCD2 journals, then the order status history (ADR-0009).
 
 Run by spark-jobs/entrypoint.sh (waits for ClickHouse /ping first):
     /opt/spark/bin/spark-submit /opt/shopflow/streaming_to_clickhouse.py
@@ -12,15 +13,19 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Callable
 
 from pyspark.sql import DataFrame, SparkSession
 from shopflow_stream.liveness import Heartbeat, ProgressListener, start_watchdog
 from shopflow_stream.sink import catalog_conf, table
 from shopflow_stream.transforms import (
+    STATUS_HISTORY_TABLE,
     STG_SPECS,
     StgSpec,
     latest_per_key,
+    latest_status_rows,
     raw_violations,
+    status_history_rows,
     stg_rows,
     to_raw_events,
 )
@@ -46,33 +51,61 @@ class ContractViolation(RuntimeError):
     """An event breaks the CDC contract (ADR-0005): retrying cannot fix it."""
 
 
-def _key(row, spec: StgSpec):
-    """PK of a row for the log: a scalar for one column, a tuple for a composite key."""
-    values = tuple(row[c] for c in spec.pk)
-    return values[0] if len(values) == 1 else values
-
-
-def write_stg(raw: DataFrame, spec: StgSpec, batch_id: int) -> None:
-    """Latest state per PK into stg_*. Rows that do not fit ClickHouse types are quarantined:
-    logged, not written, still in raw_events for a reload (ADR-0008)."""
-    rows = stg_rows(raw, spec).persist()
+def _write_quarantined(
+    rows: DataFrame,
+    target: str,
+    key_columns: tuple[str, ...],
+    dedup: Callable[[DataFrame], DataFrame],
+    batch_id: int,
+) -> None:
+    """Rows with quarantine_reason are logged, not written, still in raw_events for a reload
+    (ADR-0008); the rest is deduplicated within the batch and appended."""
+    rows = rows.persist()
     try:
         quarantined = rows.where(rows.quarantine_reason.isNotNull())
-        sample = quarantined.select(*spec.pk, "kafka_offset", "quarantine_reason")
+        sample = quarantined.select(*key_columns, "kafka_offset", "quarantine_reason")
         sample = sample.limit(QUARANTINE_SAMPLE).collect()
         if sample:
             log.warning(
                 "batch=%s %s quarantined=%s sample=%s",
                 batch_id,
-                spec.target_table,
+                target,
                 quarantined.count(),
-                [(_key(r, spec), r.kafka_offset, r.quarantine_reason) for r in sample],
+                [(_key(r, key_columns), r.kafka_offset, r.quarantine_reason) for r in sample],
             )
-        valid = latest_per_key(rows.where(rows.quarantine_reason.isNull()), spec)
+        valid = dedup(rows.where(rows.quarantine_reason.isNull()))
         if not valid.isEmpty():
-            valid.writeTo(table(spec.target_table)).append()
+            valid.writeTo(table(target)).append()
     finally:
         rows.unpersist()
+
+
+def _key(row, key_columns: tuple[str, ...]):
+    """Key of a row for the log: a scalar for one column, a tuple for a composite key."""
+    values = tuple(row[c] for c in key_columns)
+    return values[0] if len(values) == 1 else values
+
+
+def write_stg(raw: DataFrame, spec: StgSpec, batch_id: int) -> None:
+    """Latest state per PK into stg_*, or one row per change into a journal (ADR-0009)."""
+    _write_quarantined(
+        stg_rows(raw, spec),
+        spec.target_table,
+        spec.pk,
+        lambda df: latest_per_key(df, spec),
+        batch_id,
+    )
+
+
+def write_status_history(raw: DataFrame, batch_id: int) -> None:
+    """Order status transitions for the funnel (ADR-0009)."""
+    _write_quarantined(
+        status_history_rows(raw),
+        STATUS_HISTORY_TABLE,
+        ("order_id",),
+        latest_status_rows,
+        batch_id,
+    )
 
 
 def write_batch(batch: DataFrame, batch_id: int) -> None:
@@ -93,6 +126,7 @@ def write_batch(batch: DataFrame, batch_id: int) -> None:
         raw.writeTo(table("raw_events")).append()
         for spec in STG_SPECS:
             write_stg(raw, spec, batch_id)
+        write_status_history(raw, batch_id)
     finally:
         raw.unpersist()
 
