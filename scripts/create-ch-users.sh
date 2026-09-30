@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create or update ClickHouse service users (ADR-0007, ADR-0008). Idempotent: every run converges
 # the user to the password, host subnet, profile and grants below. Runs as $CLICKHOUSE_USER.
-# spark_writer: INSERT only on the tables the streaming job writes, from the LAN subnet only.
+# spark_writer: INSERT (+ SELECT for the connector) only on the tables Spark writes, LAN subnet only.
 # The password never leaves this machine: only its sha256 goes to the server.
 # Usage: scripts/create-ch-users.sh   (CLICKHOUSE_SPARK_PASSWORD, LAN_SUBNET from env or .env)
 set -euo pipefail
@@ -27,11 +27,20 @@ statements=(
     "GRANT INSERT ON shopflow.raw_events TO spark_writer"
     "GRANT INSERT ON shopflow.stg_orders TO spark_writer"
     "GRANT INSERT ON shopflow.stg_order_items TO spark_writer"
+    # M3 journals and staging (ADR-0009). dim_*, fact_orders and marts are built by ClickHouse.
+    "GRANT INSERT ON shopflow.stg_customer_versions TO spark_writer"
+    "GRANT INSERT ON shopflow.stg_product_versions TO spark_writer"
+    "GRANT INSERT ON shopflow.stg_order_status_history TO spark_writer"
+    "GRANT INSERT ON shopflow.stg_inventory TO spark_writer"
     # The connector reads the table schema with SELECT and the cluster topology when the
     # catalog loads (spike 2.4). system.tables/columns/databases are filtered by grants.
     "GRANT SELECT ON shopflow.raw_events TO spark_writer"
     "GRANT SELECT ON shopflow.stg_orders TO spark_writer"
     "GRANT SELECT ON shopflow.stg_order_items TO spark_writer"
+    "GRANT SELECT ON shopflow.stg_customer_versions TO spark_writer"
+    "GRANT SELECT ON shopflow.stg_product_versions TO spark_writer"
+    "GRANT SELECT ON shopflow.stg_order_status_history TO spark_writer"
+    "GRANT SELECT ON shopflow.stg_inventory TO spark_writer"
     "GRANT SELECT ON system.clusters TO spark_writer"
     "GRANT SELECT ON system.macros TO spark_writer"
 )
