@@ -132,6 +132,37 @@ compare "fact_orders since ${FACT_PRICE_SINCE% *}: price != list, miss" "0 0" \
         FROM fact_orders WHERE created_at >= '$FACT_PRICE_SINCE'
         FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
 
+# mart_revenue_daily (FR-4): per day items, revenue, revenue_net = Postgres (md5 over days).
+# Categories are as of the order (SCD2) and Postgres keeps only the current one, so per
+# (day, category) the mart is compared with the same aggregate over fact_orders instead.
+# Exact once the mart refreshed after the job caught up (every 2 min).
+compare "mart_revenue_daily: per day (md5)" \
+    "$(psql "SELECT count(*), md5(coalesce(string_agg(d || '|' || i || '|' || r || '|' || n, E'\\n' ORDER BY d), ''))
+        FROM (SELECT (o.created_at AT TIME ZONE 'UTC')::date AS d, sum(oi.quantity) AS i,
+                     sum(oi.quantity * oi.price_at_order) AS r,
+                     coalesce(sum(oi.quantity * oi.price_at_order) FILTER (WHERE o.status <> 'cancelled'), 0.00) AS n
+              FROM order_items oi JOIN orders o USING (order_id) GROUP BY 1) t")" \
+    "$(scripts/ch-query.sh "SELECT count(), lower(hex(MD5(arrayStringConcat(arrayMap(x -> x.2, arraySort(
+                groupArray((d, concat(toString(d), '|', toString(i), '|', toDecimalString(r, 2), '|',
+                                      toDecimalString(n, 2)))))), '\n'))))
+        FROM (SELECT order_date AS d, sum(items) AS i, sum(revenue) AS r, sum(revenue_net) AS n
+              FROM mart_revenue_daily GROUP BY d)
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+compare "mart_revenue_daily vs fact_orders: missing, extra" "0 0" \
+    "$(scripts/ch-query.sh "WITH
+            fact AS (SELECT order_date, ifNull(category, 'unknown') AS category,
+                         uniqExact(order_id) AS orders, sum(quantity) AS items, sum(amount) AS revenue,
+                         sumIf(amount, status != 'cancelled') AS revenue_net
+                     FROM fact_orders GROUP BY order_date, category),
+            mart AS (SELECT order_date, category, orders, items, revenue, revenue_net
+                     FROM mart_revenue_daily)
+        SELECT (SELECT count() FROM (SELECT * FROM fact EXCEPT SELECT * FROM mart)),
+               (SELECT count() FROM (SELECT * FROM mart EXCEPT SELECT * FROM fact))
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+echo "mart_revenue_daily freshness: $(scripts/ch-query.sh "SELECT concat('refreshed_at ', toString(max(refreshed_at)),
+    ', source_watermark ', toString(max(source_watermark)),
+    ', lag ', toString(dateDiff('second', max(source_watermark), now64(3))), ' s') FROM mart_revenue_daily")"
+
 echo
 echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"
 scripts/ch-query.sh "SELECT count() AS events,

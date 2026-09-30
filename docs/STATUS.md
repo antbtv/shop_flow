@@ -362,6 +362,8 @@
   - `mart_revenue_daily` (день, категория, выручка, заказы, позиции), refreshable MV.
   - Приёмка: по дням старше окна лага = запросу к Postgres; время refresh (`system.view_refreshes`) и память записаны.
   - Закрывает: FR-4.
+  - Сделано на ноутбуке (2026-09-30): `017_mart_revenue_daily.sql` (`MergeTree ORDER BY (order_date, category)`, категория без версии → `'unknown'`, без nullable-ключа), `018_mart_revenue_daily_mv.sql` (`REFRESH EVERY 2 MINUTE DEPENDS ON dim_products_mv`, `refresh_retries = 3`, `max_memory_usage` 768 МиБ, `max_threads = 2`; `source_watermark` = `max(max(event_time)) OVER ()`). `check_pipeline.sh`: по дням позиции, `revenue`, `revenue_net` = Postgres (MD5 по дням; по категориям с Postgres не сравниваем — там только текущая категория, а витрина по SCD2 на момент заказа); витрина против того же агрегата по `fact_orders` в обе стороны (`EXCEPT` туда и обратно); свежесть `refreshed_at`, `source_watermark`.
+  - Стенд: refresh 23 мс, 11 строк (2026-09-26 — ручной тест 2.7, 29 и 30.09 — 5 категорий генератора); по дням MD5 = Postgres (3 дня), расхождений с фактом 0 / 0.
 - [ ] **3.11. Витрина воронки FR-5** (~45 мин)
   - `mart_funnel_daily`: created → paid → delivered, конверсии, медиана времени до оплаты.
   - Приёмка: `created` по дням = Postgres по `created_at`; у заказов в `paid`/`shipped`/`delivered` есть переход `paid`, у `delivered` есть `delivered` (пропусков 0).
