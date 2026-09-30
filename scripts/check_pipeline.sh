@@ -5,6 +5,7 @@
 # checksums. The SCD2 journals must hold one row per (key, source.ts_us) of raw_events, and the
 # status history the current status of every order changed since it started (ADR-0009): both
 # only from the first event in the journal, older history comes from the backfill (3.8).
+# SCD2 dimensions and fact_orders are checked last (see below).
 # Also prints the ingest lag of the last 10 minutes. CLICKHOUSE_URL may point to another server.
 # Usage: scripts/check_pipeline.sh   Exit 1 on any mismatch.
 # Exact only when the job has caught up: stop the generator and wait one trigger (30 s).
@@ -117,6 +118,19 @@ dim_check dim_customers customer_id "name || '|' || coalesce(address, '') || '|'
     "name, '|', address, '|', segment"
 dim_check dim_products product_id "name || '|' || category || '|' || price::text" \
     "name, '|', category, '|', toDecimalString(price, 2)"
+
+# fact_orders (ADR-0009): lines of existing orders = Postgres. For orders of the M3 generator
+# (items since FACT_PRICE_SINCE) price_at_order must equal list_price of the SCD2 version valid
+# at order creation, and every line must find a version (no ASOF miss): the end-to-end SCD2 check.
+FACT_PRICE_SINCE=${FACT_PRICE_SINCE:-2026-09-29 18:15:00}
+compare "fact_orders: rows, sum(amount)" \
+    "$(psql "SELECT count(*), coalesce(sum(i.quantity * i.price_at_order), 0.00) FROM order_items i JOIN orders o USING (order_id)")" \
+    "$(scripts/ch-query.sh "SELECT count(), toDecimalString(sum(amount), 2) FROM fact_orders
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+compare "fact_orders since ${FACT_PRICE_SINCE% *}: price != list, miss" "0 0" \
+    "$(scripts/ch-query.sh "SELECT countIf(price_at_order != list_price), countIf(category IS NULL)
+        FROM fact_orders WHERE created_at >= '$FACT_PRICE_SINCE'
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
 
 echo
 echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"

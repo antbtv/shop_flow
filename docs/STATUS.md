@@ -353,6 +353,8 @@
 - [ ] **3.9. `fact_orders`** (~1 ч)
   - Зерно «позиция заказа», `ASOF JOIN` к `dim_products`.
   - Приёмка (старше окна лага 10 мин): строки и `sum(quantity * price_at_order)` = Postgres; строк с `price_at_order` ≠ цены `dim_products` на момент заказа 0 (сквозная проверка SCD2).
+  - Сделано на ноутбуке (2026-09-30): `016_fact_orders.sql` — представление по прототипу 3.5 (`INNER JOIN` позиций к заказам, `ASOF LEFT JOIN dim_products` по `created_at >= valid_from`, `join_use_nulls = 1`); `amount` через `toDecimal64` = `Decimal(18, 2)` (без этого `Int32 × Decimal(10,2)` оставался `Decimal(10,2)` и мог переполниться); явные алиасы (AL09 отключено в файле). `check_pipeline.sh`: строки и `sum(amount)` = Postgres (`order_items JOIN orders`); для заказов с `FACT_PRICE_SINCE` (по умолчанию 2026-09-29 18:15 UTC, начало позиций генератора M3) `price_at_order ≠ list_price` и промахов ASOF — 0. Генератор выполняет действия последовательно, поэтому окно лага не нужно при остановленном генераторе.
+  - Стенд: 11206 строк, сумма 128440934.27 = Postgres; с 2026-09-29 18:15 расхождений цены и промахов 0. По всей истории одна строка с `price_at_order ≠ list_price`: позиция 2 ручного теста 2.7 (цена 12.50 задана вручную); промахов ASOF нет и у старых заказов.
 - [ ] **3.10. Витрина выручки FR-4** (~45 мин)
   - `mart_revenue_daily` (день, категория, выручка, заказы, позиции), refreshable MV.
   - Приёмка: по дням старше окна лага = запросу к Postgres; время refresh (`system.view_refreshes`) и память записаны.
