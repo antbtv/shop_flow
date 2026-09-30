@@ -46,13 +46,19 @@ class ContractViolation(RuntimeError):
     """An event breaks the CDC contract (ADR-0005): retrying cannot fix it."""
 
 
+def _key(row, spec: StgSpec):
+    """PK of a row for the log: a scalar for one column, a tuple for a composite key."""
+    values = tuple(row[c] for c in spec.pk)
+    return values[0] if len(values) == 1 else values
+
+
 def write_stg(raw: DataFrame, spec: StgSpec, batch_id: int) -> None:
     """Latest state per PK into stg_*. Rows that do not fit ClickHouse types are quarantined:
     logged, not written, still in raw_events for a reload (ADR-0008)."""
     rows = stg_rows(raw, spec).persist()
     try:
         quarantined = rows.where(rows.quarantine_reason.isNotNull())
-        sample = quarantined.select(spec.pk, "kafka_offset", "quarantine_reason")
+        sample = quarantined.select(*spec.pk, "kafka_offset", "quarantine_reason")
         sample = sample.limit(QUARANTINE_SAMPLE).collect()
         if sample:
             log.warning(
@@ -60,7 +66,7 @@ def write_stg(raw: DataFrame, spec: StgSpec, batch_id: int) -> None:
                 batch_id,
                 spec.target_table,
                 quarantined.count(),
-                [(r[spec.pk], r.kafka_offset, r.quarantine_reason) for r in sample],
+                [(_key(r, spec), r.kafka_offset, r.quarantine_reason) for r in sample],
             )
         valid = latest_per_key(rows.where(rows.quarantine_reason.isNull()), spec)
         if not valid.isEmpty():
