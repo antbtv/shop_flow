@@ -358,12 +358,15 @@
   - Pi5 (2026-09-30): пользователь применил `016_fact_orders.sql`, `amount` = `Decimal(18, 2)`.
   - Приёмка пройдена: `check_pipeline.sh` на Pi5 OK целиком (rc 0): `fact_orders` 11206 строк, `sum(amount)` 128440934.27 = Postgres; с 2026-09-29 18:15 UTC `price_at_order ≠ list_price` 0 и промахов ASOF 0 (сквозная проверка SCD2); измерения = Postgres, в том числе клиент 1693 из ручного теста 3.8.
   - Стоимость на Pi5: полный проход представления (`count`, `sum(amount)`, `uniqExact(category)`) 20–21 мс, 43926 прочитанных строк, 3,1 МиБ. Линейная оценка на 2 млн позиций — единицы секунд; решение «представление или таблица» по замеру 3.12.
-- [ ] **3.10. Витрина выручки FR-4** (~45 мин)
+- [x] **3.10. Витрина выручки FR-4** (~45 мин)
   - `mart_revenue_daily` (день, категория, выручка, заказы, позиции), refreshable MV.
   - Приёмка: по дням старше окна лага = запросу к Postgres; время refresh (`system.view_refreshes`) и память записаны.
   - Закрывает: FR-4.
   - Сделано на ноутбуке (2026-09-30): `017_mart_revenue_daily.sql` (`MergeTree ORDER BY (order_date, category)`, категория без версии → `'unknown'`, без nullable-ключа), `018_mart_revenue_daily_mv.sql` (`REFRESH EVERY 2 MINUTE DEPENDS ON dim_products_mv`, `refresh_retries = 3`, `max_memory_usage` 768 МиБ, `max_threads = 2`; `source_watermark` = `max(max(event_time)) OVER ()`). `check_pipeline.sh`: по дням позиции, `revenue`, `revenue_net` = Postgres (MD5 по дням; по категориям с Postgres не сравниваем — там только текущая категория, а витрина по SCD2 на момент заказа); витрина против того же агрегата по `fact_orders` в обе стороны (`EXCEPT` туда и обратно); свежесть `refreshed_at`, `source_watermark`.
   - Стенд: refresh 23 мс, 11 строк (2026-09-26 — ручной тест 2.7, 29 и 30.09 — 5 категорий генератора); по дням MD5 = Postgres (3 дня), расхождений с фактом 0 / 0.
+  - Pi5 (2026-09-30): пользователь применил 017/018, MV сразу ушла в первый refresh (`Running`), ошибок нет.
+  - Приёмка пройдена: `check_pipeline.sh` на Pi5 OK целиком (rc 0): витрина по дням = Postgres (MD5, 3 дня), против `fact_orders` 0 / 0. Refresh на Pi5: `mart_revenue_daily_mv` 132 мс (43926 строк чтения, 11 записано), вставка во временную таблицу 28 мс и 4,6 МиБ; `dim_products_mv` 149 мс, `dim_customers_mv` 180 мс. Лимит MV 768 МиБ с запасом на порядки.
+  - Находка: запросы refresh видны в `query_log` с пустым `user` как `INSERT INTO shopflow.`.tmp.inner_id.<uuid>``` (временная таблица перед `EXCHANGE`), а не от `shopflow`: по этому признаку мерить память и время refresh в 3.12. Задержка витрины (`now - source_watermark`) при остановленном генераторе равна времени простоя, мерится под нагрузкой в 3.12.
 - [ ] **3.11. Витрина воронки FR-5** (~45 мин)
   - `mart_funnel_daily`: created → paid → delivered, конверсии, медиана времени до оплаты.
   - Приёмка: `created` по дням = Postgres по `created_at`; у заказов в `paid`/`shipped`/`delivered` есть переход `paid`, у `delivered` есть `delivered` (пропусков 0).
