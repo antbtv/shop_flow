@@ -43,6 +43,8 @@ statements=(
     "GRANT SELECT ON shopflow.stg_inventory TO spark_writer"
     "GRANT SELECT ON system.clusters TO spark_writer"
     "GRANT SELECT ON system.macros TO spark_writer"
+    # Reading (backfill from raw_events, 3.8): the connector plans one task per partition.
+    "GRANT SELECT(partition, partition_id, rows, bytes_on_disk, database, table, active) ON system.parts TO spark_writer"
 )
 for q in "${statements[@]}"; do
     # Print the first words only: the hash stays out of terminal logs.

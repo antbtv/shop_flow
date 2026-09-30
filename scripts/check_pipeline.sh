@@ -90,6 +90,34 @@ else
               AND (order_id, status) NOT IN (SELECT order_id, status FROM stg_order_status_history)")"
 fi
 
+# SCD2 dimensions (ADR-0009): current versions = Postgres (count + md5 of sorted attributes),
+# one current version per key, no gaps or overlaps, valid_from non-decreasing in LSN order.
+# Exact once the job caught up and dim_*_mv refreshed after it (every 2 min).
+printf '\n%-40s %24s %24s  %s\n' check postgres clickhouse verdict
+dim_check() { # dim_check dim id "pg_attr_sql" "ch_attr_sql"
+    local dim=$1 id=$2 source=${1#dim_}
+    compare "$dim: current = $source (count, md5)" \
+        "$(psql "SELECT count(*), coalesce(md5(string_agg($id || '|' || $3, E'\\n' ORDER BY $id)), '') FROM $source")" \
+        "$(scripts/ch-query.sh "SELECT count(), if(count() = 0, '', lower(hex(MD5(arrayStringConcat(
+                arrayMap(x -> x.2, arraySort(groupArray(($id, concat(toString($id), '|', $4))))), '\n')))))
+            FROM $dim WHERE is_current = 1 FORMAT CustomSeparated
+            SETTINGS format_custom_field_delimiter = ' '")"
+    compare "$dim: keys with >1 current, gaps, clock back" "0 0 0" \
+        "$(scripts/ch-query.sh "SELECT
+                (SELECT count() FROM (SELECT $id FROM $dim GROUP BY $id HAVING sum(is_current) > 1)),
+                countIf(next_from IS NOT NULL AND (valid_to IS NULL OR valid_to != next_from)),
+                countIf(valid_to < valid_from)
+            FROM (SELECT $id, valid_from, valid_to,
+                    leadInFrame(toNullable(valid_from)) OVER (PARTITION BY $id ORDER BY version
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS next_from
+                  FROM $dim)
+            FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+}
+dim_check dim_customers customer_id "name || '|' || coalesce(address, '') || '|' || coalesce(segment, '')" \
+    "name, '|', address, '|', segment"
+dim_check dim_products product_id "name || '|' || category || '|' || price::text" \
+    "name, '|', category, '|', toDecimalString(price, 2)"
+
 echo
 echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"
 scripts/ch-query.sh "SELECT count() AS events,
