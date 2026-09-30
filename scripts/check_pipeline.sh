@@ -163,6 +163,35 @@ echo "mart_revenue_daily freshness: $(scripts/ch-query.sh "SELECT concat('refres
     ', source_watermark ', toString(max(source_watermark)),
     ', lag ', toString(dateDiff('second', max(source_watermark), now64(3))), ' s') FROM mart_revenue_daily")"
 
+# mart_funnel_daily (FR-5): per day created, shipped, delivered, cancelled = Postgres by current
+# status (md5 over days): shipped and delivered cannot be cancelled and delivered/cancelled are
+# final, so "reached" equals the current status there. paid is not comparable (a paid order may
+# be cancelled): the history must hold a paid transition for every paid/shipped/delivered order
+# and a delivered one for every delivered order.
+compare "mart_funnel_daily: per day (md5)" \
+    "$(psql "SELECT count(*), md5(coalesce(string_agg(d || '|' || c || '|' || s || '|' || dl || '|' || x, E'\\n' ORDER BY d), ''))
+        FROM (SELECT (created_at AT TIME ZONE 'UTC')::date AS d, count(*) AS c,
+                     count(*) FILTER (WHERE status IN ('shipped', 'delivered')) AS s,
+                     count(*) FILTER (WHERE status = 'delivered') AS dl,
+                     count(*) FILTER (WHERE status = 'cancelled') AS x
+              FROM orders GROUP BY 1) t")" \
+    "$(scripts/ch-query.sh "SELECT count(), lower(hex(MD5(arrayStringConcat(arrayMap(x -> x.2, arraySort(
+                groupArray((order_date, concat(toString(order_date), '|', toString(created), '|',
+                    toString(shipped), '|', toString(delivered), '|', toString(cancelled)))))), '\n'))))
+        FROM mart_funnel_daily
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+compare "status history: missing paid, delivered" "0 0" \
+    "$(scripts/ch-query.sh "SELECT
+            countIf(status IN ('paid', 'shipped', 'delivered') AND order_id NOT IN
+                (SELECT order_id FROM stg_order_status_history WHERE status = 'paid')),
+            countIf(status = 'delivered' AND order_id NOT IN
+                (SELECT order_id FROM stg_order_status_history WHERE status = 'delivered'))
+        FROM stg_orders FINAL WHERE is_deleted = 0
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+echo "mart_funnel_daily freshness: $(scripts/ch-query.sh "SELECT concat('refreshed_at ', toString(max(refreshed_at)),
+    ', source_watermark ', toString(max(source_watermark)),
+    ', lag ', toString(dateDiff('second', max(source_watermark), now64(3))), ' s') FROM mart_funnel_daily")"
+
 echo
 echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"
 scripts/ch-query.sh "SELECT count() AS events,
