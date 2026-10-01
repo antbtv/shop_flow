@@ -1,6 +1,6 @@
 # Статус ShopFlow
 
-Обновлено: 2026-09-29
+Обновлено: 2026-10-01
 
 ## Решения
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
@@ -376,9 +376,20 @@
   - Стенд: refresh 51 мс, 5 дней; по дням MD5 = Postgres; пропусков `paid` и `delivered` в истории 0 / 0; за 30.09 без доставок медиана доставки NULL.
   - Pi5 (2026-09-30): пользователь применил 019/020, MV сразу ушла в первый refresh, ошибок нет.
   - Приёмка пройдена: `check_pipeline.sh` на Pi5 OK целиком (rc 0): воронка по дням = Postgres (MD5, 5 дней), пропусков `paid`/`delivered` в истории 0 / 0; все прошлые проверки (stg, журналы, измерения, факт, выручка) OK. Refresh на Pi5 (`view_refreshes` / вставка во временную таблицу по `query_log`): `mart_funnel_daily_mv` 186 мс / 86 мс, 7,0 МиБ, 59807 строк чтения; `mart_revenue_daily_mv` 142 / 44 мс, 4,4 МиБ; `dim_products_mv` 149 / 20 мс, 4,0 МиБ; `dim_customers_mv` 135 / 30 мс, 7,0 МиБ. Цепочка из 4 MV укладывается в ~0,6 с за цикл 2 мин.
-- [ ] **3.12. Нагрузка на Pi5 и задержка витрин** (~45 мин, Pi5)
+- [x] **3.12. Нагрузка на Pi5 и задержка витрин** (~45 мин, Pi5)
   - Генератор 30 мин `--rate 5` со всеми refresh.
   - Приёмка: `LoadAverage1` и RSS ClickHouse в рамках ADR-0004; парты не растут; p95 refresh < периода; задержка `stg_*` < 5 мин (NFR-3); задержка витрин записана.
+  - Сделано (2026-10-01, после перезапуска стенда; до прогона `check_pipeline.sh` OK целиком): генератор 18:53:48–19:23:50 UTC (`--rate 5 --seed 12 --no-seasonality`, 8529 действий: 3463 заказа, 3587 смен статуса, 349 + 667 по клиентам, 49 + 230 по товарам, 184 пополнения). Сэмплер с ноутбука по HTTP каждые 30 с (56 замеров в окне): `system.asynchronous_metrics` (`LoadAverage1`, `MemoryResident`, `CGroupMemoryUsed`), активные парты и `system.merges` по `shopflow`, `system.view_refreshes` (`last_success_duration_ms`), свежесть `now - max(event_time)` по `raw_events` и `stg_*`, `now - source_watermark` по витринам; `docker stats` ноутбука. Сдвиг часов ноутбук ↔ Pi5 ~20 мс. В stg нет `ingested_at`, поэтому задержка stg мерится как свежесть при потоке ~5 событий/с.
+  - Приёмка пройдена:
+    - Pi5: `LoadAverage1` max 0,35, p95 0,21, медиана 0,04; `MemoryResident` ClickHouse max 772 МиБ (в 2.8 — 633), `CGroupMemoryUsed` max 1179 из 2816 МиБ (разница с RSS — страничный кеш), с середины прогона плато; `MemoryTracking` max 88 МиБ. В рамках ADR-0004.
+    - Парты не растут: `raw_events` пила 11–16 (в конце 12; в старых дневных партициях по 1–3 неслитых парта), `stg_*` и журналы ≤ 6 (в конце 5), `dim_*` и витрины по 1; одновременных слияний в замерах 0.
+    - Refresh (15 циклов на MV, `view_refreshes`): `dim_customers_mv` p95 202 мс, `dim_products_mv` 187, `mart_revenue_daily_mv` 137, `mart_funnel_daily_mv` 149, max 204 мс при периоде 2 мин. Вставки во временные таблицы (`query_log`, 68 шт.): p95 43 мс, max 48 мс, пик памяти 8,95 МиБ.
+    - Задержка `raw_events` (`ingested_at - event_time`, 29518 событий окна): p50 15,5 с, p95 29,2 с, p99 30,3 с, max 31 с. Свежесть stg с 18:57 (50 замеров): p95 30,5–33,7 с, max 35,9 с (NFR-3 ≤ 5 мин).
+    - Задержка витрин для читателя (`now - source_watermark`, с первого refresh на новых данных): p50 94 с, p95 148 с, max 150 с ≈ trigger 30 с + период refresh 2 мин. После остановки генератора `refreshed_at - source_watermark` = 131 с.
+    - `check_pipeline.sh` после догона OK целиком (rc 0): позиции по 5 топикам; `orders` 17696, `order_items` 21627 (сумма 226725807.67), `inventory` 576 / 67151 = Postgres; журналы 6089 / 674 = `raw_events`; `dim_customers` 2042, `dim_products` 192 = Postgres по MD5, структура 0/0/0; `fact_orders` = Postgres, расхождений цены и промахов ASOF 0; обе витрины по дням = Postgres, против факта 0 / 0; пропусков в истории статусов 0.
+  - Ноутбук (пик / медиана, МиБ): `spark` 1660 / 1394 из 2048 (в 2.8 — 1357; пила GC 1,18–1,48 ГиБ без роста, `driver.memory` 1g), `kafka` 690 / 576, `connect` 1014 / 1013, `postgres` 76 / 74. Рестартов, OOM, ошибок и карантина в логе `spark` нет.
+  - `fact_orders` остаётся представлением: полный проход (`count`, `sum(amount)`, `uniqExact(category)`) на 21627 позициях 24 мс, 48284 строки чтения, 4,4 МиБ. Линейно на ~2 млн позиций (ADR-0004) — порядка 2 с и сотен МиБ; пересмотреть, если витрины или дашборд в M5 упрутся в это время.
+  - Риск: запас `spark` до `mem_limit` ~19 % на пике (больше таблиц в батче с M3). При росте нагрузки в M4/M5 следить за OOM; запас по `driver.memory` есть.
 - [ ] **3.13. Итоги, ревью, закрытие** (~45 мин)
   - Runbook, STATUS, `dq-tester` (предварительно FR-9 по `fact_orders`), `reviewer`, PR.
   - Приёмка: pytest, ruff, sqlfluff зелёные; блокеров у `reviewer` нет.
