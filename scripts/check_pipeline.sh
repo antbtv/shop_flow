@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Kafka -> ClickHouse check (ADR-0008). For each CDC topic, every Kafka position in
 # [earliest, latest) must be in raw_events exactly once after dedup (uniqExact, no FINAL).
-# stg_orders and stg_order_items must match Postgres: row count and cheap checksums.
-# Also prints the ingest lag of the last 10 minutes.
+# stg_orders, stg_order_items and stg_inventory must match Postgres: row count and cheap
+# checksums. The SCD2 journals must hold one row per (key, source.ts_us) of raw_events, and the
+# status history the current status of every order changed since it started (ADR-0009): both
+# only from the first event in the journal, older history comes from the backfill (3.8).
+# SCD2 dimensions and fact_orders are checked last (see below).
+# Also prints the ingest lag of the last 10 minutes. CLICKHOUSE_URL may point to another server.
 # Usage: scripts/check_pipeline.sh   Exit 1 on any mismatch.
 # Exact only when the job has caught up: stop the generator and wait one trigger (30 s).
 set -euo pipefail
@@ -58,6 +62,154 @@ compare "order_items: rows, sum(qty), sum(qty*price)" \
     "$(scripts/ch-query.sh "SELECT count(), sum(quantity), toDecimalString(sum(quantity * price_at_order), 2)
         FROM stg_order_items FINAL WHERE is_deleted = 0 FORMAT CustomSeparated
         SETTINGS format_custom_field_delimiter = ' '")"
+compare "inventory: rows, sum(quantity)" \
+    "$(psql "SELECT count(*), coalesce(sum(quantity), 0) FROM inventory")" \
+    "$(scripts/ch-query.sh "SELECT count(), sum(quantity) FROM stg_inventory FINAL WHERE is_deleted = 0
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+
+printf '\n%-40s %24s %24s  %s\n' check raw_events clickhouse verdict
+for pair in customers:stg_customer_versions products:stg_product_versions; do
+    topic=cdc.public.${pair%%:*} journal=${pair##*:}
+    since=$(scripts/ch-query.sh "SELECT toString(min(event_time)) FROM $journal")
+    if [[ $since == 1970-01-01* ]]; then
+        printf '%-40s %24s %24s  %s\n' "$journal (key, ts_us)" - 0 EMPTY
+        continue
+    fi
+    compare "$journal (key, ts_us) since ${since% *}" \
+        "$(scripts/ch-query.sh "SELECT uniqExact(event_key, JSONExtract(payload, 'source', 'ts_us', 'Int64'))
+            FROM raw_events WHERE topic = '$topic' AND op IN ('c', 'u', 'd', 'r')
+              AND event_time >= '$since'")" \
+        "$(scripts/ch-query.sh "SELECT count() FROM $journal FINAL WHERE event_time >= '$since'")"
+    # The journal key (id, valid_from = ts_us) merges UPDATEs of one transaction on purpose. The same
+    # ts_us in two transactions would silently drop a version (ADR-0009): must stay 0.
+    compare "$journal: (key, ts_us) in >1 transaction" 0 \
+        "$(scripts/ch-query.sh "SELECT count() FROM (SELECT 1 FROM raw_events
+            WHERE topic = '$topic' AND op IN ('c', 'u', 'd', 'r')
+            GROUP BY event_key, JSONExtract(payload, 'source', 'ts_us', 'Int64')
+            HAVING uniqExact(JSONExtract(payload, 'source', 'txId', 'Nullable(Int64)')) > 1)")"
+done
+since=$(scripts/ch-query.sh "SELECT toString(min(changed_at)) FROM stg_order_status_history")
+if [[ $since == 1970-01-01* ]]; then
+    printf '%-40s %24s %24s  %s\n' "status history" - 0 EMPTY
+else
+    compare "orders without current status in history" 0 \
+        "$(scripts/ch-query.sh "SELECT count() FROM stg_orders FINAL
+            WHERE is_deleted = 0 AND event_time >= '$since'
+              AND (order_id, status) NOT IN (SELECT order_id, status FROM stg_order_status_history)")"
+fi
+
+# SCD2 dimensions (ADR-0009): current versions = Postgres (count + md5 of sorted attributes),
+# one current version per key, no gaps or overlaps, valid_from non-decreasing in LSN order.
+# The gap check assumes no DELETE + re-INSERT of a key: then a gap after the delete is legitimate.
+# Exact once the job caught up and dim_*_mv refreshed after it (every 2 min).
+printf '\n%-40s %24s %24s  %s\n' check postgres clickhouse verdict
+dim_check() { # dim_check dim id "pg_attr_sql" "ch_attr_sql"
+    local dim=$1 id=$2 source=${1#dim_}
+    compare "$dim: current = $source (count, md5)" \
+        "$(psql "SELECT count(*), coalesce(md5(string_agg($id || '|' || $3, E'\\n' ORDER BY $id)), '') FROM $source")" \
+        "$(scripts/ch-query.sh "SELECT count(), if(count() = 0, '', lower(hex(MD5(arrayStringConcat(
+                arrayMap(x -> x.2, arraySort(groupArray(($id, concat(toString($id), '|', $4))))), '\n')))))
+            FROM $dim WHERE is_current = 1 FORMAT CustomSeparated
+            SETTINGS format_custom_field_delimiter = ' '")"
+    compare "$dim: keys with >1 current, gaps, clock back" "0 0 0" \
+        "$(scripts/ch-query.sh "SELECT
+                (SELECT count() FROM (SELECT $id FROM $dim GROUP BY $id HAVING sum(is_current) > 1)),
+                countIf(next_from IS NOT NULL AND (valid_to IS NULL OR valid_to != next_from)),
+                countIf(valid_to < valid_from)
+            FROM (SELECT $id, valid_from, valid_to,
+                    leadInFrame(toNullable(valid_from)) OVER (PARTITION BY $id ORDER BY version
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS next_from
+                  FROM $dim)
+            FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+}
+dim_check dim_customers customer_id "name || '|' || coalesce(address, '') || '|' || coalesce(segment, '')" \
+    "name, '|', address, '|', segment"
+dim_check dim_products product_id "name || '|' || category || '|' || price::text" \
+    "name, '|', category, '|', toDecimalString(price, 2)"
+
+# fact_orders (ADR-0009): lines of existing orders = Postgres. For orders of the M3 generator
+# (items since FACT_PRICE_SINCE) price_at_order must equal list_price of the SCD2 version valid
+# at order creation, and every line must find a version (no ASOF miss): the end-to-end SCD2 check.
+FACT_PRICE_SINCE=${FACT_PRICE_SINCE:-2026-09-29 18:15:00}
+compare "fact_orders: rows, sum(amount)" \
+    "$(psql "SELECT count(*), coalesce(sum(i.quantity * i.price_at_order), 0.00) FROM order_items i JOIN orders o USING (order_id)")" \
+    "$(scripts/ch-query.sh "SELECT count(), toDecimalString(sum(amount), 2) FROM fact_orders
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+# The third number (lines checked) must be > 0, otherwise the check passed on an empty set.
+fact_price=$(scripts/ch-query.sh "SELECT countIf(price_at_order != list_price), countIf(category IS NULL), count()
+        FROM fact_orders WHERE created_at >= '$FACT_PRICE_SINCE'
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")
+fact_checked=${fact_price##* }
+compare "fact_orders since ${FACT_PRICE_SINCE% *}: price != list, miss" "0 0" "${fact_price% *}"
+compare "fact_orders since ${FACT_PRICE_SINCE% *}: lines checked > 0" 1 "$((fact_checked > 0))"
+
+# mart_revenue_daily (FR-4): per day items, revenue, revenue_net = Postgres (md5 over days).
+# Categories are as of the order (SCD2) and Postgres keeps only the current one, so per
+# (day, category) the mart is compared with the same aggregate over fact_orders instead.
+# Exact once the mart refreshed after the job caught up (every 2 min).
+compare "mart_revenue_daily: per day (md5)" \
+    "$(psql "SELECT count(*), md5(coalesce(string_agg(d || '|' || i || '|' || r || '|' || n, E'\\n' ORDER BY d), ''))
+        FROM (SELECT (o.created_at AT TIME ZONE 'UTC')::date AS d, sum(oi.quantity) AS i,
+                     sum(oi.quantity * oi.price_at_order) AS r,
+                     coalesce(sum(oi.quantity * oi.price_at_order) FILTER (WHERE o.status <> 'cancelled'), 0.00) AS n
+              FROM order_items oi JOIN orders o USING (order_id) GROUP BY 1) t")" \
+    "$(scripts/ch-query.sh "SELECT count(), lower(hex(MD5(arrayStringConcat(arrayMap(x -> x.2, arraySort(
+                groupArray((d, concat(toString(d), '|', toString(i), '|', toDecimalString(r, 2), '|',
+                                      toDecimalString(n, 2)))))), '\n'))))
+        FROM (SELECT order_date AS d, sum(items) AS i, sum(revenue) AS r, sum(revenue_net) AS n
+              FROM mart_revenue_daily GROUP BY d)
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+compare "mart_revenue_daily vs fact_orders: missing, extra" "0 0" \
+    "$(scripts/ch-query.sh "WITH
+            fact AS (SELECT order_date, ifNull(category, 'unknown') AS category,
+                         uniqExact(order_id) AS orders, sum(quantity) AS items, sum(amount) AS revenue,
+                         sumIf(amount, status != 'cancelled') AS revenue_net
+                     FROM fact_orders GROUP BY order_date, category),
+            mart AS (SELECT order_date, category, orders, items, revenue, revenue_net
+                     FROM mart_revenue_daily)
+        SELECT (SELECT count() FROM (SELECT * FROM fact EXCEPT SELECT * FROM mart)),
+               (SELECT count() FROM (SELECT * FROM mart EXCEPT SELECT * FROM fact))
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+echo "mart_revenue_daily freshness: $(scripts/ch-query.sh "SELECT concat('refreshed_at ', toString(max(refreshed_at)),
+    ', source_watermark ', toString(max(source_watermark)),
+    ', lag ', toString(dateDiff('second', max(source_watermark), now64(3))), ' s') FROM mart_revenue_daily")"
+
+# mart_funnel_daily (FR-5): per day created, shipped, delivered, cancelled = Postgres by current
+# status (md5 over days): shipped and delivered cannot be cancelled and delivered/cancelled are
+# final, so "reached" equals the current status there. paid is not comparable (a paid order may
+# be cancelled): the history must hold a paid transition for every paid/shipped/delivered order
+# and a delivered one for every delivered order.
+compare "mart_funnel_daily: per day (md5)" \
+    "$(psql "SELECT count(*), md5(coalesce(string_agg(d || '|' || c || '|' || s || '|' || dl || '|' || x, E'\\n' ORDER BY d), ''))
+        FROM (SELECT (created_at AT TIME ZONE 'UTC')::date AS d, count(*) AS c,
+                     count(*) FILTER (WHERE status IN ('shipped', 'delivered')) AS s,
+                     count(*) FILTER (WHERE status = 'delivered') AS dl,
+                     count(*) FILTER (WHERE status = 'cancelled') AS x
+              FROM orders GROUP BY 1) t")" \
+    "$(scripts/ch-query.sh "SELECT count(), lower(hex(MD5(arrayStringConcat(arrayMap(x -> x.2, arraySort(
+                groupArray((order_date, concat(toString(order_date), '|', toString(created), '|',
+                    toString(shipped), '|', toString(delivered), '|', toString(cancelled)))))), '\n'))))
+        FROM mart_funnel_daily
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+compare "status history: missing paid, delivered" "0 0" \
+    "$(scripts/ch-query.sh "SELECT
+            countIf(status IN ('paid', 'shipped', 'delivered') AND order_id NOT IN
+                (SELECT order_id FROM stg_order_status_history WHERE status = 'paid')),
+            countIf(status = 'delivered' AND order_id NOT IN
+                (SELECT order_id FROM stg_order_status_history WHERE status = 'delivered'))
+        FROM stg_orders FINAL WHERE is_deleted = 0
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+echo "mart_funnel_daily freshness: $(scripts/ch-query.sh "SELECT concat('refreshed_at ', toString(max(refreshed_at)),
+    ', source_watermark ', toString(max(source_watermark)),
+    ', lag ', toString(dateDiff('second', max(source_watermark), now64(3))), ' s') FROM mart_funnel_daily")"
+
+# Refreshable MVs (every 2 min): no failed refresh, none older than two periods. A frozen
+# source_watermark with a fresh refreshed_at only means no new data, not a failure.
+compare "refreshable MV: exceptions, stale > 5 min" "0 0" \
+    "$(scripts/ch-query.sh "SELECT countIf(exception != ''),
+            countIf(last_success_time IS NULL OR last_success_time < now() - INTERVAL 5 MINUTE)
+        FROM system.view_refreshes WHERE database = 'shopflow'
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
 
 echo
 echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"
