@@ -147,8 +147,10 @@ scripts/ch-query.sh "SYSTEM STOP VIEW shopflow.mart_funnel_daily_mv"   # пау�
 
 - Норма: `status = Scheduled`, `exception` пустой, refresh 0,1–0,2 с на Pi5 (3.12). При ошибке ClickHouse повторяет 3 раза (`refresh_retries`), таблица остаётся прежней.
 - Свежесть витрин: колонки `refreshed_at` и `source_watermark` (максимальное `event_time` входа). Задержка для читателя `now - source_watermark` ≈ trigger 30 с + период 2 мин, под нагрузкой p95 148 с (3.12). При остановленном генераторе она равна времени простоя — это не сбой.
+- Изменить запрос MV: `CREATE ... IF NOT EXISTS` в `apply-ddl.sh` существующую MV не меняет. Новая миграция с `ALTER TABLE shopflow.<mv> MODIFY QUERY ...` (или `DROP VIEW` + `CREATE` той же MV: TO-таблица и её данные остаются), затем `SYSTEM REFRESH VIEW`.
+- `mart_revenue_daily.orders` по категориям не суммировать: заказ с позициями разных категорий есть в каждой. Заказов за день — `uniqExact(order_id)` по `fact_orders` или `created` в воронке.
 - Запросы refresh в `system.query_log` видны с пустым `user` как `` INSERT INTO shopflow.`.tmp.inner_id.<uuid>` ``.
-- `check_pipeline.sh` проверяет: текущие версии `dim_*` = Postgres (MD5), отсутствие разрывов и перекрытий SCD2; `fact_orders` = Postgres и цену на момент заказа (с `FACT_PRICE_SINCE`); витрины по дням = Postgres и = агрегату `fact_orders`; пропуски переходов `paid`/`delivered` в истории статусов.
+- `check_pipeline.sh` проверяет: текущие версии `dim_*` = Postgres (MD5), отсутствие разрывов и перекрытий SCD2; `fact_orders` = Postgres и цену на момент заказа (с `FACT_PRICE_SINCE`); витрины по дням = Postgres и = агрегату `fact_orders`; пропуски переходов `paid`/`delivered` в истории статусов; ошибки и застой refresh (> 5 мин); `(key, ts_us)` в нескольких транзакциях (потеря версии SCD2).
 
 ### Дозаливка stg из `raw_events`
 

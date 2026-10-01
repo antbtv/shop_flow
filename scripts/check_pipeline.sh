@@ -80,6 +80,13 @@ for pair in customers:stg_customer_versions products:stg_product_versions; do
             FROM raw_events WHERE topic = '$topic' AND op IN ('c', 'u', 'd', 'r')
               AND event_time >= '$since'")" \
         "$(scripts/ch-query.sh "SELECT count() FROM $journal FINAL WHERE event_time >= '$since'")"
+    # The journal key (id, valid_from = ts_us) merges UPDATEs of one transaction on purpose. The same
+    # ts_us in two transactions would silently drop a version (ADR-0009): must stay 0.
+    compare "$journal: (key, ts_us) in >1 transaction" 0 \
+        "$(scripts/ch-query.sh "SELECT count() FROM (SELECT 1 FROM raw_events
+            WHERE topic = '$topic' AND op IN ('c', 'u', 'd', 'r')
+            GROUP BY event_key, JSONExtract(payload, 'source', 'ts_us', 'Int64')
+            HAVING uniqExact(JSONExtract(payload, 'source', 'txId', 'Nullable(Int64)')) > 1)")"
 done
 since=$(scripts/ch-query.sh "SELECT toString(min(changed_at)) FROM stg_order_status_history")
 if [[ $since == 1970-01-01* ]]; then
@@ -93,6 +100,7 @@ fi
 
 # SCD2 dimensions (ADR-0009): current versions = Postgres (count + md5 of sorted attributes),
 # one current version per key, no gaps or overlaps, valid_from non-decreasing in LSN order.
+# The gap check assumes no DELETE + re-INSERT of a key: then a gap after the delete is legitimate.
 # Exact once the job caught up and dim_*_mv refreshed after it (every 2 min).
 printf '\n%-40s %24s %24s  %s\n' check postgres clickhouse verdict
 dim_check() { # dim_check dim id "pg_attr_sql" "ch_attr_sql"
@@ -127,10 +135,13 @@ compare "fact_orders: rows, sum(amount)" \
     "$(psql "SELECT count(*), coalesce(sum(i.quantity * i.price_at_order), 0.00) FROM order_items i JOIN orders o USING (order_id)")" \
     "$(scripts/ch-query.sh "SELECT count(), toDecimalString(sum(amount), 2) FROM fact_orders
         FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
-compare "fact_orders since ${FACT_PRICE_SINCE% *}: price != list, miss" "0 0" \
-    "$(scripts/ch-query.sh "SELECT countIf(price_at_order != list_price), countIf(category IS NULL)
+# The third number (lines checked) must be > 0, otherwise the check passed on an empty set.
+fact_price=$(scripts/ch-query.sh "SELECT countIf(price_at_order != list_price), countIf(category IS NULL), count()
         FROM fact_orders WHERE created_at >= '$FACT_PRICE_SINCE'
-        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")
+fact_checked=${fact_price##* }
+compare "fact_orders since ${FACT_PRICE_SINCE% *}: price != list, miss" "0 0" "${fact_price% *}"
+compare "fact_orders since ${FACT_PRICE_SINCE% *}: lines checked > 0" 1 "$((fact_checked > 0))"
 
 # mart_revenue_daily (FR-4): per day items, revenue, revenue_net = Postgres (md5 over days).
 # Categories are as of the order (SCD2) and Postgres keeps only the current one, so per
@@ -191,6 +202,14 @@ compare "status history: missing paid, delivered" "0 0" \
 echo "mart_funnel_daily freshness: $(scripts/ch-query.sh "SELECT concat('refreshed_at ', toString(max(refreshed_at)),
     ', source_watermark ', toString(max(source_watermark)),
     ', lag ', toString(dateDiff('second', max(source_watermark), now64(3))), ' s') FROM mart_funnel_daily")"
+
+# Refreshable MVs (every 2 min): no failed refresh, none older than two periods. A frozen
+# source_watermark with a fresh refreshed_at only means no new data, not a failure.
+compare "refreshable MV: exceptions, stale > 5 min" "0 0" \
+    "$(scripts/ch-query.sh "SELECT countIf(exception != ''),
+            countIf(last_success_time IS NULL OR last_success_time < now() - INTERVAL 5 MINUTE)
+        FROM system.view_refreshes WHERE database = 'shopflow'
+        FORMAT CustomSeparated SETTINGS format_custom_field_delimiter = ' '")"
 
 echo
 echo "ingest lag, last 10 min (ingested_at - event_time, seconds):"
