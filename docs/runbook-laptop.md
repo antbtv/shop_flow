@@ -190,6 +190,7 @@ ssh pi5 'SKIP_WAIT=1 bash -s -- trigger shopflow_reconciliation' < scripts/pi5/a
 ssh pi5 'bash -s' < scripts/pi5/reconcile-once.sh    # разовая сверка логикой DAG, вывод в терминал
 ssh pi5 'bash -s' < scripts/pi5/airflow-smoke.sh     # импорт DAG, подключения, маскирование паролей
 ssh pi5 'bash -s' < scripts/pi5/loadtest-m4.sh       # память стека с тремя DAG (15 мин, генератор на ноутбуке)
+STAGES=checks scripts/bench-marts.sh               # с ноутбука: сверка и DQ под лимитами airflow_reader на shopflow_bench
 ```
 
 ### Результаты: `dq_check_results`
@@ -207,14 +208,18 @@ scripts/ch-query.sh "SELECT dag_id, run_id, check_name, table_name, status, viol
 | `ok` | всё сошлось; `in_flight` в `details` — ключи, изменённые после отсечки `T`, это норма | ничего |
 | `violation` | сверка: ключи `missing_in_ch` / `different` / `extra_in_ch` (до 20 в `details`); DQ: `sample` и `hint` | `missing_in_ch` — искать ключ в `raw_events` (карантин, ADR-0008), дозалить `backfill_from_raw.py` (раздел 7) |
 | `lagging` | Postgres менялся > 5 мин назад, а в `raw_events` ничего после `T`: поток стоит или догоняет (NFR-3) | проверить Spark и коннектор (раздел 6, `/debezium-debug`), после догона запустить сверку вручную |
-| `source_unavailable` | ноутбук не ответил за 2 ч; DAG зелёный, второй раз подряд — красный | включить ноутбук или запустить сверку вручную; ручной успешный запуск сбрасывает серию |
+| `source_unavailable` | ноутбук не ответил за 2 ч; DAG зелёный, второй плановый запуск подряд — красный | включить ноутбук и запустить сверку вручную; серию считают только плановые запуски `scheduled__*`, ручные её не сбрасывают |
 | `error` | ошибка, не «нет ноутбука»: `pg_hba`, пароль, лимит соединений, сломанная проверка | текст в `details` и в логе задачи |
 
 Тестовые строки M4 (`lagging`, `source_unavailable`, `simulated_violation` 2026-10-02) оставлены, их видно по `run_id` и `check_name`.
 
+- `pg_value`/`ch_value` сверки — строки, попавшие в сравнение. У `orders`, `order_items`, `inventory` обе стороны режутся отсечкой `T`. У `customers` и `products` ClickHouse отдаёт все живые ключи журнала, а Postgres — только `updated_at < T`, поэтому числа различаются по построению; судить по `violations`, не по разнице.
+- Ноутбук уснул посреди сверки (сенсор уже прошёл) — `error`, не `source_unavailable`: запустить вручную.
+- Таблицы растут без TTL (NFR-5): DQ и витрины в лимитах до ~4,5 млн позиций (ADR-0009), следить по `table_size` в `dq_check_results`.
+
 ### Ноутбук выключен или в другой сети
 
-Сверка ждёт Postgres до 2 ч (сенсор в режиме reschedule, слот не держит), затем пишет `source_unavailable`. Ошибки с SQLSTATE (`28000`/`28P01` — `pg_hba` или пароль, `53300`) — это `error`, а не «нет ноутбука». DQ и ретеншн работают без ноутбука. Сменился IP ноутбука или Pi5 — поправить `LAPTOP_HOST`/`PI5_HOST` в обоих `.env`, перезапустить Postgres ноутбука (пересоберётся `pg_hba`) и Airflow на Pi5.
+Сверка ждёт Postgres до 2 ч (сенсор в режиме reschedule, слот не держит), затем пишет `source_unavailable`. `ip_nonlocal_bind` на ноутбуке действует для всех программ, а порт Postgres, опубликованный Docker, идёт мимо файрвола: в чужой сети защита — только `pg_hba` (`/32` Pi5) и пароль `recon_reader`. Ошибки с SQLSTATE (`28000`/`28P01` — `pg_hba` или пароль, `53300`) — это `error`, а не «нет ноутбука». DQ и ретеншн работают без ноутбука. Сменился IP ноутбука или Pi5 — поправить `LAPTOP_HOST`/`PI5_HOST` в обоих `.env`, перезапустить Postgres ноутбука (пересоберётся `pg_hba`) и Airflow на Pi5.
 
 ### Тесты и проверки кода
 

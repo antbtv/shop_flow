@@ -1,5 +1,6 @@
 # pg_hba for the laptop Postgres (ADR-0010). Rendered at container start by postgres/entrypoint.sh:
-# @LAPTOP_COMPOSE_SUBNET@ and @PI5_HOST@ come from .env, IPs never land in git (ADR-0003).
+# @LAPTOP_COMPOSE_SUBNET@ and @PI5_HOST@ come from .env, not from this file (ADR-0003); private
+# addresses appear in git only as examples in .env.example.
 # TYPE  DATABASE  USER          ADDRESS                   METHOD
 
 # Unix socket inside the container: docker compose exec ... psql in scripts and init.
