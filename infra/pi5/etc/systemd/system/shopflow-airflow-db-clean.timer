@@ -1,0 +1,12 @@
+# Weekly, Sunday 04:30 local time (after shopflow_retention at 04:00); Persistent=true runs a
+# missed week after Pi5 was off.
+[Unit]
+Description=ShopFlow: weekly airflow db clean
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
