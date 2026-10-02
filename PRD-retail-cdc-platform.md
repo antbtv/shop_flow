@@ -198,6 +198,8 @@ ORDER BY (product_id, valid_from);
 --   цепочка DEPENDS ON dim_products_mv; refreshed_at и source_watermark для замера NFR-3.
 ```
 
+Служебная таблица `dq_check_results` (M4, ADR-0010): результаты сверки FR-8, проверок FR-9 и ретеншна NFR-5, одна строка на (запуск DAG, проверка, таблица), `ReplacingMergeTree(checked_at)` — повтор задачи перезаписывает свою строку. Пишет только `airflow_reader`, читает дашборд M5.
+
 ## 6. Архитектура
 
 ```mermaid
