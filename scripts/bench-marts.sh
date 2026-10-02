@@ -105,3 +105,49 @@ q "SELECT 'dim_products', count(), countIf(is_current) FROM $DB.dim_products
    UNION ALL SELECT 'mart_revenue_daily', count(), 0 FROM $DB.mart_revenue_daily
    UNION ALL SELECT 'mart_funnel_daily', count(), sum(created) FROM $DB.mart_funnel_daily
    FORMAT PrettyCompactMonoBlock"
+
+# Checks under the airflow_reader profile (512 MiB, 2 threads, 120 s; scripts/create-ch-users.sh):
+# the ClickHouse side of reconciliation (bucket aggregates and one arbitration batch of 16 buckets
+# per table, through the real module) and the 12 DQ queries, pointed at $DB.
+echo "checks under airflow_reader limits:"
+start=$(q "SELECT now()")
+PYTHONPATH=airflow/dags DB=$DB python3 - <<'PY'
+import os
+import subprocess
+from datetime import UTC, datetime
+
+import shopflow_checks.reconciliation as rec
+from shopflow_checks.dq import load_checks
+
+DB = os.environ["DB"]
+LIMITS = "max_memory_usage = 536870912, max_threads = 2, max_execution_time = 120"
+
+
+def ch_as(label):
+    def ch(sql):
+        sql = sql.replace("shopflow.", f"{DB}.") + f"\nSETTINGS {LIMITS}, log_comment = 'bench {label}'"
+        out = subprocess.run(["scripts/ch-query.sh"], input=sql, text=True, capture_output=True)
+        if out.returncode:
+            print(f"  {label}: FAILED {out.stdout.strip()[-300:]} {out.stderr.strip()[-300:]}")
+            return []
+        return [tuple(line.split("\t")) for line in out.stdout.splitlines()]
+    return ch
+
+
+no_pg = lambda *args: []  # noqa: E731 - only the ClickHouse side runs on Pi5
+cutoff = datetime(2026, 9, 15, tzinfo=UTC)
+for spec in rec.TABLES:
+    rec.bucket_aggregates(spec, no_pg, ch_as(f"reconcile buckets {spec.name}"), cutoff)
+    result = rec.TableResult(table=spec.name, cutoff=cutoff)
+    rec._arbitrate(spec, no_pg, ch_as(f"reconcile keys {spec.name}"), cutoff,
+                   list(range(rec.ARBITRATION_BATCH)), result)
+    print(f"  {spec.name}: one batch of {rec.ARBITRATION_BATCH} buckets = {result.extra_total} keys")
+for check in load_checks():
+    ch_as(f"dq {check.name}")(check.sql)
+PY
+q "SYSTEM FLUSH LOGS"
+q "SELECT log_comment, type, query_duration_ms, formatReadableSize(memory_usage) AS memory,
+          read_rows, if(exception != '', substring(exception, 1, 80), '') AS error
+   FROM system.query_log
+   WHERE event_time >= '$start' AND type != 'QueryStart' AND log_comment LIKE 'bench %'
+   ORDER BY event_time_microseconds FORMAT PrettyCompactMonoBlock"
