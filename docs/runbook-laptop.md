@@ -69,7 +69,8 @@ $D exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server loc
 ```bash
 rsync -av --chmod=D755,F644 docker-compose.pi5.yml infra/pi5/pi5.env.example pi5:shopflow/
 rsync -av --delete --chmod=D755,F644 clickhouse/ pi5:shopflow/clickhouse/
-ssh pi5 'cd ~/shopflow && docker compose -f docker-compose.pi5.yml up -d --wait'
+rsync -av --delete --chmod=D755,F644 --exclude='__pycache__' airflow/ pi5:shopflow/airflow/
+ssh pi5 'cd ~/shopflow && docker compose -f docker-compose.pi5.yml build && docker compose -f docker-compose.pi5.yml up -d --wait'
 ```
 
 Первый деплой: на Pi5 `cp pi5.env.example .env && chmod 600 .env`, вписать новый пароль. Сверить пароль с ноутбуком без вывода:

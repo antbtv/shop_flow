@@ -1,8 +1,45 @@
-# Pi5 stack (NFR-2): ClickHouse now, Airflow in Milestone 4. Run on Pi5 from ~/shopflow:
-#   docker compose -f docker-compose.pi5.yml up -d
+# Pi5 stack (NFR-2): ClickHouse and Airflow. Run on Pi5 from ~/shopflow:
+#   docker compose -f docker-compose.pi5.yml build && docker compose -f docker-compose.pi5.yml up -d
 # Needs ~/shopflow/.env on Pi5 (template: infra/pi5/pi5.env.example). Deploy: ADR-0007.
-# Memory: ADR-0004. Network: ports only on the LAN address, ADR-0003.
+# Memory: ADR-0004. Network: ports only on the LAN address, ADR-0003. Airflow: ADR-0010.
 name: shopflow
+
+# Airflow 3.1, LocalExecutor: tasks run inside the scheduler container (ADR-0004).
+x-airflow: &airflow
+  build: ./airflow
+  image: shopflow-airflow:3.1.0
+  restart: unless-stopped
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    # Two tasks at a time fit the scheduler limit (ADR-0004); sensors wait in reschedule mode.
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY}
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD}@airflow-db/airflow
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?set AIRFLOW_JWT_SECRET}
+    AIRFLOW__API__WORKERS: "1"
+    AIRFLOW__API__BASE_URL: http://${PI5_HOST:?set PI5_HOST}:8080
+    # Lightweight HTTP health endpoint instead of spawning the airflow CLI in a healthcheck.
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "True"
+    # Connections live in .env, not in the metadata DB (ADR-0010). Passwords are hex: URI-safe.
+    AIRFLOW_CONN_SHOPFLOW_CLICKHOUSE: >-
+      {"conn_type": "generic", "host": "clickhouse", "port": 8123, "schema": "shopflow",
+      "login": "airflow_reader", "password": "${CLICKHOUSE_AIRFLOW_PASSWORD:?set CLICKHOUSE_AIRFLOW_PASSWORD}"}
+    # Laptop Postgres, read-only role (FR-8). Keepalives: a laptop that falls asleep mid-query
+    # must break the connection instead of hanging the task (statement_timeout is server-side).
+    AIRFLOW_CONN_SHOPFLOW_POSTGRES: >-
+      {"conn_type": "postgres", "host": "${LAPTOP_HOST:?set LAPTOP_HOST}", "port": 5432,
+      "schema": "shopflow", "login": "recon_reader",
+      "password": "${RECON_READER_PASSWORD:?set RECON_READER_PASSWORD}",
+      "extra": {"connect_timeout": "10", "keepalives": "1", "keepalives_idle": "30",
+      "keepalives_interval": "10", "keepalives_count": "3"}}
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    airflow-init: { condition: service_completed_successfully }
 
 services:
   clickhouse:
@@ -34,5 +71,83 @@ services:
       retries: 30
       start_period: 30s
 
+  airflow-db:
+    image: postgres:17-alpine
+    mem_limit: 256m
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow", "-d", "airflow"]
+      interval: 10s
+      retries: 20
+
+  # One-shot: schema migrations (core and FAB) and the admin user, through the image entrypoint.
+  # Idempotent: an existing admin is left as is. Rerun after an Airflow upgrade.
+  airflow-init:
+    <<: *airflow
+    mem_limit: 768m
+    restart: "no"
+    command: version
+    environment:
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD}@airflow-db/airflow
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?set AIRFLOW_JWT_SECRET}
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:?set AIRFLOW_ADMIN_USER}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD}
+    volumes: []
+    depends_on:
+      airflow-db: { condition: service_healthy }
+
+  airflow-api-server:
+    <<: *airflow
+    mem_limit: 768m
+    command: api-server
+    ports:
+      - "${PI5_HOST}:8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v2/monitor/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  airflow-scheduler:
+    <<: *airflow
+    # LocalExecutor runs tasks here: ~340 MB per task, parallelism 2 (ADR-0004).
+    mem_limit: 1152m
+    command: scheduler
+    # Let running tasks finish their ClickHouse insert before SIGKILL.
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8974/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # No healthcheck: the only probe is the airflow CLI, a Python process of ~150 MB against a
+  # 512m limit. Liveness shows in the UI (DAG import time) and `docker compose ps`.
+  airflow-dag-processor:
+    <<: *airflow
+    mem_limit: 512m
+    command: dag-processor
+
+# Pinned: airflow_reader may connect to ClickHouse only from this subnet (ADR-0010).
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${PI5_COMPOSE_SUBNET:?set PI5_COMPOSE_SUBNET}
+
 volumes:
   clickhouse-data:
+  airflow-db:
+  airflow-logs:
