@@ -1,6 +1,6 @@
 # Статус ShopFlow
 
-Обновлено: 2026-10-01
+Обновлено: 2026-10-02
 
 ## Решения
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
@@ -402,3 +402,82 @@
 Итоги Milestone 3: Spark пишет журналы версий `customers`/`products`, `stg_inventory` и историю статусов; ClickHouse собирает SCD2 `dim_customers`/`dim_products` refreshable MV из журналов (FR-3), `fact_orders` — представление с `ASOF JOIN` по версии товара на момент заказа, витрины выручки (FR-4) и воронки (FR-5) — refreshable MV цепочкой `DEPENDS ON`; история до выкатки дозалита Spark batch из `raw_events` теми же преобразованиями. Под 30-мин нагрузкой `--rate 5` на Pi5 load ≤ 0,35, ClickHouse RSS ≤ 772 МиБ, refresh ≤ 0,2 с, задержка stg p95 ~31 с, витрин p95 148 с. Неочевидное: `valid_from` = `source.ts_us` (время коммита, общий для транзакции), порядок версий — LSN; refresh без `APPEND` подменяет таблицу через `EXCHANGE` и требует прав определителя на базу; `minIf` без совпадений даёт 1970, а не NULL (`minIfOrNull`); квантиль на пустом наборе даёт NULL, который `Float64` превращал в 0; `Int32 × Decimal(10,2)` оставался `Decimal(10,2)`; в образе Spark Python 3.10 (`datetime.UTC` нет); коннектор читает `UInt64` как `Decimal(20,0)` и при чтении требует `system.parts`. Условия входа в M4: Airflow на Pi5, сверка FR-8 (доступ Pi5 → Postgres отдельным ADR), DAG FR-9, перенесённые задачи выше; запас памяти `spark` ~19 % на пике.
 
 **Milestone 3 завершён 2026-10-01.** PR `milestone-3` → `master` создаёт пользователь (push по SSH из сессии Claude недоступен).
+
+## Milestone 4: оркестрация и качество
+
+Ветка: `milestone-4`. План подтверждён 2026-10-02. Оценка ~16 ч. Шаги на Pi5 и в сети ноутбука выполняет пользователь.
+Скоуп: Airflow на Pi5 (NFR-2, NFR-7), DAG сверки Postgres ↔ ClickHouse (FR-8), DAG data quality (FR-9), DAG ретеншна (NFR-5), задачи, перенесённые из M3. Telegram (FR-11) остаётся в M5. В M4 только заглушка `on_failure_callback` с записью в лог.
+Сейчас Postgres на ноутбуке опубликован только на `127.0.0.1:5432`, поэтому для FR-8 нужно менять сеть.
+
+До кода `architect` проверяет ADR-0010 «Airflow на Pi5 и доступ к Postgres»:
+1. Доступ Pi5 → Postgres. Кандидат: публикация на `${LAPTOP_HOST}:5432` и `127.0.0.1`, `pg_hba` только с IP Pi5, роль `recon_reader` только с SELECT, `default_transaction_read_only`, `statement_timeout`, DHCP-резервация ноутбука. Альтернативы: SSH-туннель (ключ к ноутбуку на Pi5), сверка на ноутбуке (теряется AF → PG из PRD 6). Отдельно ufw на ноутбуке.
+2. Ноутбук выключен: задача отличает «источник недоступен» (retry, затем отдельный статус) от «расхождения», чтобы NFR-6 не давал ложных алертов.
+3. Методика сверки: `count` и сумма хеша бизнес-колонок по живым строкам (`stg_* FINAL`, `is_deleted = 0`), хвост отрезается окном лага (`updated_at`/`event_time` < `now − (NFR-3 + запас)`). У `order_items` нет `updated_at`, окно через `orders`. Детализация расхождений по диапазонам PK.
+4. Образ Airflow: `apache/airflow:3.1.x` + `airflow/Dockerfile` (`clickhouse-connect`, провайдер Postgres), сборка на Pi5 без registry; auth manager для admin.
+5. Пользователи ClickHouse и результаты: `airflow_reader` с SELECT на `stg_*`, `dim_*`, `fact_orders`, витрины и `system.parts`, INSERT только в `dq_check_results` (MergeTree без TTL, её прочитает дашборд M5). Без ALTER.
+6. Память: задача ~340 МБ, scheduler 1152m, `parallelism` 2; сверка тянет из Postgres агрегаты, а не строки.
+
+- [x] **4.0. Ветка** (~10 мин)
+  - Сделано (2026-10-02): PR #4 `milestone-3` → `master` влит пользователем, `master` fast-forward до `8eba60f`, ветка `milestone-4` от `master`.
+  - Приёмка: `git log master..milestone-3` пусто, текущая ветка `milestone-4`.
+- [ ] **4.1. ADR-0010 и ревью `architect`** (~1 ч)
+  - Пункты 1–6 выше. Правки PRD 6.1 и 8 (дерево `airflow/`), `.env.example` (`LAPTOP_HOST`, `AIRFLOW_CONN_*`).
+  - Приёмка: вердикт «принять» или «принять с правками», правки внесены.
+  - Закрывает: подготовку к FR-8, NFR-2.
+- [ ] **4.2. Доступ к Postgres с Pi5 (ноутбук)** (~1 ч)
+  - Порт в `docker-compose.laptop.yml`, `pg_hba`, роль `recon_reader` в `postgres/init` и идемпотентный скрипт для существующего тома (init работает только на пустом томе).
+  - Приёмка: на Pi5 `docker run --rm postgres:17-bookworm psql "host=$LAPTOP_HOST user=recon_reader dbname=shopflow" -c 'select count(*) from orders'` возвращает число; `INSERT` этой ролью даёт `read-only transaction`; с другого хоста LAN `no pg_hba.conf entry`; `ss -tlnp` показывает 5432 только на `127.0.0.1` и `$LAPTOP_HOST`; Debezium и генератор работают, `scripts/check_pipeline.sh` зелёный.
+  - Закрывает: FR-8 (доступ).
+  - Риск: ноутбук на Wi-Fi меняет IP, нужна резервация на роутере.
+- [ ] **4.3. ClickHouse: `airflow_reader` и `dq_check_results`** (~45 мин)
+  - `clickhouse/ddl/021_dq_check_results.sql`, пользователь и гранты в `scripts/create-ch-users.sh`.
+  - Приёмка: `sqlfluff lint clickhouse/ddl` чистый; `SHOW GRANTS FOR airflow_reader` совпадает с ADR; `INSERT INTO stg_orders` под ним даёт `ACCESS_DENIED`, `INSERT INTO dq_check_results` проходит.
+- [ ] **4.4. Перенос из M3: гранты `spark_writer` и пароль в argv** (~45 мин)
+  - SELECT только на `raw_events` и `system.parts`; хеш пароля в `curl --data-binary @-`; упоминание `system.parts` в ADR-0008.
+  - Приёмка: Spark стартует и пишет (`max(event_time)` в `stg_orders` растёт), каталог коннектора загружается; в `ps aux` во время работы скрипта нет хеша; `SHOW GRANTS FOR spark_writer` без SELECT на `stg_*`.
+  - Риск: коннектору может понадобиться SELECT на целевые таблицы. Тогда грант возвращаем и фиксируем причину.
+- [ ] **4.5. Образ Airflow и сервисы в `docker-compose.pi5.yml`** (~1 ч)
+  - `airflow/Dockerfile`, сервисы `airflow-db`, `airflow-init`, `scheduler`, `api-server`, `dag-processor` с `mem_limit` из ADR-0004, порт `${PI5_HOST}:8080`, логи и метабаза на HDD; `infra/pi5/pi5.env.example` и список `rsync` в ADR-0007.
+  - Приёмка: `docker compose -f docker-compose.pi5.yml config -q` проходит; `docker build airflow/` собирается локально.
+- [ ] **4.6. Деплой Airflow на Pi5** (~1 ч)
+  - Приёмка: `docker compose ps` — все сервисы `healthy`; `curl http://$PI5_HOST:8080/api/v2/monitor/health` — healthy; `sudo ss -tlnp` — 8080 только на `$PI5_HOST`; `docker stats --no-stream` в пределах лимитов, ClickHouse не задет; после `reboot` всё поднимается.
+  - Закрывает: NFR-2, NFR-7.
+  - Риск: долгая сборка arm64 на Pi5; изменения auth в Airflow 3.
+- [ ] **4.7. Общий модуль и DAG `shopflow_healthcheck`** (~1 ч)
+  - `airflow/dags/shopflow_common/`: клиенты CH и PG из `AIRFLOW_CONN_*`, классификация «источник недоступен», заглушка `on_failure_callback`; тест импорта DAG.
+  - Приёмка: `python3 -m pytest -q tests/test_dags.py` (DagBag без ошибок); на Pi5 `airflow dags test shopflow_healthcheck` — success; при выключенном Postgres ноутбука задача падает с `SourceUnavailable`.
+- [ ] **4.8. Временный ClickHouse для SQL-тестов (перенос из M3)** (~1 ч)
+  - pytest-фикстура с `clickhouse-server:25.8.33.6` на ноутбуке, применение `clickhouse/ddl`; первые тесты `dim_*_mv` (одна текущая версия, без разрывов, порядок по LSN при одинаковом `ts_us`).
+  - Приёмка: `python3 -m pytest -q tests/sql` зелёный, намеренно сломанный `leadInFrame` его роняет.
+- [ ] **4.9. SQL-тесты ASOF, воронки, `backfill_from_raw.py`** (~1 ч)
+  - Приёмка: `pytest -q tests/sql` зелёный, покрыты промах ASOF, повтор статуса, снапшот с `1970-01-01`.
+- [ ] **4.10. Логика сверки и тесты** (~1 ч)
+  - `airflow/dags/shopflow_checks/reconciliation.py`: запросы PG и CH по 5 таблицам, окно лага, сравнение, строки результата.
+  - Приёмка: `pytest -q tests/test_reconciliation.py` ловит лишний ключ, недостающий ключ, разные значения, тумбстоун; строка внутри окна лага не считается расхождением.
+- [ ] **4.11. `reconciliation_dag.py` на Pi5** (~1 ч)
+  - Ежедневно и вручную, результат в `dq_check_results`, при расхождении DAG падает.
+  - Приёмка: прогон — 5 строк с `mismatch = 0`; негатив: Spark остановлен, генератор пишет, запуск с окном 0 — расхождение и `failed`, после старта Spark следующий прогон чистый; при выключенном ноутбуке статус `source_unavailable`, а не `mismatch`.
+  - Закрывает: FR-8.
+- [ ] **4.12. SQL проверок FR-9 и тесты** (~1 ч)
+  - `airflow/dags/sql/dq/*.sql`: дубли ключа заказа (`fact_orders`, `stg_* FINAL`, `dim_*`), отрицательные `quantity`, цены, суммы, остатки, позиции без заказа, заказы без позиций, статус факта ≠ последнему в истории (последние два перенесены из M3).
+  - «Заказы без позиций» проверяются только для `created_at` после выкатки генератора позиций (3.3): 10462 заказа M1–M2 без позиций есть и в Postgres. Порог — константа с комментарием (подтверждено пользователем 2026-10-02).
+  - Приёмка: `pytest -q tests/sql/test_dq.py`: на чистых данных 0 нарушений, на подложенных срабатывает каждое правило.
+- [ ] **4.13. `data_quality_dag.py` на Pi5** (~45 мин)
+  - Приёмка: прогон — все проверки с 0 нарушений в `dq_check_results`; негатив: `order_items` с `quantity = -1` в Postgres после доставки CDC роняет DAG с примером ключа, после удаления строки прогон чистый.
+  - Закрывает: FR-9.
+- [ ] **4.14. `retention_dag.py`** (~1 ч)
+  - Проверка, что в `raw_events` нет активных партиций старше 30 + 1 дня; `airflow db clean` старше 30 дней; чистка логов Airflow; размеры таблиц из `system.parts` в `dq_check_results`.
+  - Приёмка: DAG success на Pi5; на временном ClickHouse таблица с TTL 1 минута и `ttl_only_drop_parts` теряет партицию, проверка это видит.
+  - Закрывает: NFR-5.
+  - Риск: `raw_events` с 2026-09-26, на живых данных TTL сработает не раньше 2026-10-26. В M4 механизм проверяется на тестовой таблице.
+- [ ] **4.15. Нагрузка: память Pi5 с Airflow** (~1 ч)
+  - Три DAG одновременно, генератор `--rate 5`, Spark.
+  - Приёмка: `oom_kill` 0, swap 0, пики `docker stats` и `memory.events max` в пределах ADR-0004; refresh витрин и задержка `stg` p95 не хуже итогов M3.
+  - Закрывает: NFR-7.
+- [ ] **4.16. Перенос из M3: refresh и `fact_orders` на ~1 млн заказов** (~1 ч)
+  - База `shopflow_bench` на Pi5, данные через `numbers()`.
+  - Приёмка: `memory_usage` refresh и запроса к `fact_orders` из `system.query_log` < 768 МиБ, время записано; порог перехода `fact_orders` на таблицу зафиксирован в ADR-0009.
+  - Риск: CPU Pi5 и время генерации.
+- [ ] **4.17. Документация, ревью, закрытие** (~1 ч)
+  - Runbook (Airflow, сверка, DQ, «ноутбук выключен»), PRD, ADR; `reviewer`, `dq-tester` (FR-8, FR-9); итоги в STATUS.
+  - Приёмка: `ruff check .`, `sqlfluff lint clickhouse/ddl`, `python3 -m pytest -q` зелёные; замечания `reviewer` закрыты; `dq-tester` 0 нарушений.
