@@ -66,3 +66,40 @@ def run_check(check: Check, ch) -> CheckResult:
         violations=violations,
         details=details,
     )
+
+
+SUMMARY_CHECK = "data_quality"
+# A manual test of the failure path without touching data: the DAG run conf
+# {"simulate_violation": true} adds this check, which always reports one violation.
+SIMULATED = Check(
+    name="simulated_violation",
+    table="test",
+    hint="manual test of the failure path (conf simulate_violation), not a data problem",
+    sql="SELECT 1 AS violations, ['simulated'] AS sample_keys",
+)
+
+
+def run_all(checks: list[Check], ch) -> list[tuple[str, CheckResult]]:
+    """Every check runs even if another one errors: a broken query is reported as 'error'."""
+    results = []
+    for check in checks:
+        try:
+            results.append((check.name, run_check(check, ch)))
+        except Exception as exc:  # noqa: BLE001 - recorded as the check's own status
+            results.append((check.name, CheckResult(
+                table_name=check.table, status="error",
+                details={"error": f"{type(exc).__name__}: {str(exc)[:500]}"},
+            )))
+    return results
+
+
+def summarize(results: list[tuple[str, CheckResult]]) -> CheckResult:
+    """Run summary (table_name ''): error beats violation beats ok."""
+    statuses = {r.status for _, r in results}
+    status = "error" if "error" in statuses else "violation" if "violation" in statuses else "ok"
+    return CheckResult(
+        table_name="",
+        status=status,
+        violations=sum(r.violations for _, r in results),
+        details={"checks": {name: r.status for name, r in results if r.status != "ok"}},
+    )

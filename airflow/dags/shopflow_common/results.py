@@ -18,14 +18,16 @@ COLUMNS = (
 
 
 def write_results(client, *, dag_id: str, run_id: str, logical_date: datetime | None,
-                  check_name: str, rows, cutoff: datetime | None = None) -> None:
-    """rows: objects with table_name, status, violations, pg_value, ch_value, details."""
+                  check_name: str | None, rows, cutoff: datetime | None = None) -> None:
+    """rows: objects with table_name, status, violations, pg_value, ch_value, details; or
+    (check_name, row) pairs when check_name is None (one DAG run, several checks)."""
     checked_at = datetime.now(UTC)
+    pairs = [(check_name, r) for r in rows] if check_name is not None else rows
     data = [
-        [dag_id, run_id, logical_date, check_name, r.table_name, r.status,
+        [dag_id, run_id, logical_date, name, r.table_name, r.status,
          r.pg_value, r.ch_value, r.violations, cutoff,
          json.dumps(r.details, ensure_ascii=False, default=str), checked_at]
-        for r in rows
+        for name, r in pairs
     ]
     client.insert(TABLE, data, column_names=list(COLUMNS))
 

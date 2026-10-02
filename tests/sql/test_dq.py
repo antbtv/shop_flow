@@ -173,3 +173,19 @@ def test_history_of_an_order_missing_in_stg_orders(client):
     history(client, 80, "created")  # order 80 quarantined for stg_orders (4.9)
     history(client, 81, "created", at=FRESH)
     assert fired(client) == {"history_without_order": ["80"]}
+
+
+def test_a_broken_check_is_an_error_and_the_others_still_run(client):
+    from shopflow_checks.dq import SIMULATED, Check, run_all, summarize
+
+    broken = Check(name="broken", table="x", hint="h" * 30, sql="SELECT no_such_column")
+    ch = lambda sql: client.query(sql).result_rows  # noqa: E731
+    results = run_all([broken, CHECKS["negative_inventory"], SIMULATED], ch)
+    assert [(n, r.status) for n, r in results] == [
+        ("broken", "error"), ("negative_inventory", "ok"), ("simulated_violation", "violation")]
+    assert "UNKNOWN_IDENTIFIER" in results[0][1].details["error"]
+    summary = summarize(results)
+    assert summary.status == "error"  # error beats violation
+    assert summary.details["checks"] == {"broken": "error", "simulated_violation": "violation"}
+    assert summarize(results[1:]).status == "violation"
+    assert summarize(results[1:2]).status == "ok"

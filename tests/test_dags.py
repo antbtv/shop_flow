@@ -13,7 +13,7 @@ import pytest
 
 IMAGE = "shopflow-airflow:3.1.0"
 DAGS = Path(__file__).resolve().parent.parent / "airflow" / "dags"
-EXPECTED_DAGS = {"shopflow_healthcheck", "shopflow_reconciliation"}
+EXPECTED_DAGS = {"shopflow_healthcheck", "shopflow_reconciliation", "shopflow_data_quality"}
 
 # PYTHONPATH as in docker-compose.pi5.yml: DAG files import shopflow_common;
 # .airflowignore keeps the helpers out of parsing.

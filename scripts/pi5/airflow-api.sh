@@ -6,7 +6,8 @@
 #   ssh pi5 'bash -s -- set-state shopflow_reconciliation <run_id> wait_for_postgres skipped' < ...
 # trigger unpauses the DAG (it then also runs on its schedule), waits up to WAIT_S (default
 # 1800 s) for the run to finish and prints the task states. SKIP_WAIT=1 (test of "laptop off")
-# turns wait_for_postgres to skipped as soon as it is waiting.
+# turns wait_for_postgres to skipped as soon as it is waiting. key=value arguments after the DAG id
+# are the run conf:  ssh pi5 'bash -s -- trigger shopflow_data_quality simulate_violation=true' < ...
 set -euo pipefail
 cd ~/shopflow
 env_value() { sed -n "s/^$1=//p" .env | tail -n 1; }
@@ -33,7 +34,18 @@ case "${1:-}" in
 trigger)
     dag=$2
     call PATCH "/dags/$dag" '{"is_paused": false}' >/dev/null
-    run=$(call POST "/dags/$dag/dagRuns" '{"logical_date": null}' \
+    # key=value arguments after the DAG id become the run conf (true/false/numbers as JSON).
+    body=$(python3 -c '
+import json, sys
+conf = {}
+for arg in sys.argv[1:]:
+    k, _, v = arg.partition("=")
+    try:
+        conf[k] = json.loads(v)
+    except ValueError:
+        conf[k] = v
+print(json.dumps({"logical_date": None, "conf": conf}))' "${@:3}")
+    run=$(call POST "/dags/$dag/dagRuns" "$body" \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["dag_run_id"])')
     echo "run_id $run"
     if [[ ${SKIP_WAIT:-0} == 1 ]]; then
