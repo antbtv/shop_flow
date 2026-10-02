@@ -4,3 +4,4 @@ ruff==0.16.9
 sqlfluff==4.3.0
 pyspark==4.0.4
 psycopg2-binary==2.9.10
+clickhouse-connect==1.9.0
