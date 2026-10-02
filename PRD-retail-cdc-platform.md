@@ -198,6 +198,8 @@ ORDER BY (product_id, valid_from);
 --   цепочка DEPENDS ON dim_products_mv; refreshed_at и source_watermark для замера NFR-3.
 ```
 
+Служебная таблица `dq_check_results` (M4, ADR-0010): результаты сверки FR-8, проверок FR-9 и ретеншна NFR-5, одна строка на (запуск DAG, проверка, таблица), `ReplacingMergeTree(checked_at)` — повтор задачи перезаписывает свою строку. Пишет только `airflow_reader`, читает дашборд M5.
+
 ## 6. Архитектура
 
 ```mermaid
@@ -219,6 +221,7 @@ flowchart LR
 - Pi5 получает статический IP (или DHCP-резервацию) в домашней сети.
 - Открытые порты на Pi5: ClickHouse HTTP (8123), ClickHouse native (9000), Airflow webserver (8080).
 - Аутентификация — базовая (домашняя сеть, наружу не пробрасывается); порты наружу не открывать.
+- Ноутбук (с Milestone 4, FR-8): Postgres (5432) на LAN-адресе ноутбука, `pg_hba` пускает из LAN только роль `recon_reader` (только SELECT) с IP Pi5. См. `docs/adr/0010-airflow-pi5-postgres-access.md`.
 
 ### 6.2 Топики брокера сообщений
 
@@ -250,14 +253,22 @@ retail-cdc-platform/
 │   └── streaming_to_clickhouse.py
 ├── clickhouse/
 │   └── ddl/                    # SQL из раздела 5.2
-├── airflow/
+├── airflow/                    # образ Airflow и DAG (ADR-0010)
+│   ├── Dockerfile
 │   └── dags/
+│       ├── shopflow_common/        # подключения, «источник недоступен», запись dq_check_results
+│       ├── shopflow_checks/        # сверка (FR-8), DQ (FR-9), ретеншн (NFR-5)
+│       ├── sql/dq/                 # проверки FR-9
 │       ├── reconciliation_dag.py
 │       ├── data_quality_dag.py
 │       └── retention_dag.py
 ├── dashboards/
 ├── infra/
-│   └── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw) и runbook
+│   ├── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw, systemd) и runbook
+│   └── laptop/                 # sysctl ноутбука для доступа Pi5 к Postgres (ADR-0010)
+├── postgres/                   # init-скрипты и шаблон pg_hba
+├── scripts/                    # DDL, пользователи ClickHouse, проверки; pi5/ — скрипты для Pi5
+├── tests/                      # pytest; sql/ — на временных ClickHouse и Postgres
 ├── docs/
 │   └── architecture.md
 └── README.md
@@ -286,7 +297,14 @@ AIRFLOW_ADMIN_USER=admin
 AIRFLOW_ADMIN_PASSWORD=changeme
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+
+# Milestone 4 (ADR-0010): сверка Pi5 → Postgres ноутбука
+LAPTOP_HOST=192.168.0.105
+RECON_READER_PASSWORD=changeme
+CLICKHOUSE_AIRFLOW_PASSWORD=changeme
 ```
+
+Полный список переменных — `.env.example` (ноутбук) и `infra/pi5/pi5.env.example` (Pi5).
 
 ## 10. План реализации
 

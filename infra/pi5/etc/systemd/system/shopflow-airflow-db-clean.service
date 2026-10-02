@@ -1,0 +1,20 @@
+# Weekly cleanup of the Airflow metadata DB on Pi5 (NFR-5, ADR-0010): dag runs, task instances,
+# XComs and logs-in-DB older than 30 days. Not a DAG: Airflow 3 blocks the metadata DB for task
+# code, and `docker compose exec` gets the container's normal environment.
+# Install: sudo cp shopflow-airflow-db-clean.{service,timer} /etc/systemd/system/ &&
+#          sudo systemctl daemon-reload && sudo systemctl enable --now shopflow-airflow-db-clean.timer
+# Run now: sudo systemctl start shopflow-airflow-db-clean.service; journalctl -u shopflow-airflow-db-clean
+[Unit]
+Description=ShopFlow: airflow db clean (older than 30 days)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# The deploy user owns ~/shopflow and is in the docker group (ADR-0007).
+User=anton
+WorkingDirectory=/home/anton/shopflow
+# --skip-archive: no _airflow_deleted_* copies; --yes: no prompt. % is %% in unit files.
+ExecStart=/bin/sh -c 'docker compose -f docker-compose.pi5.yml exec -T airflow-scheduler \
+    airflow db clean --clean-before-timestamp "$(date -u -d "-30 days" +%%Y-%%m-%%dT%%H:%%M:%%S+00:00)" \
+    --skip-archive --yes'

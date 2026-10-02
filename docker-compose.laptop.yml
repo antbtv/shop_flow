@@ -1,5 +1,5 @@
 # Laptop stack (NFR-1): Postgres -> Debezium (Kafka Connect) -> Kafka. Decisions: docs/adr/0005-cdc-contract.md.
-# Ports are published on 127.0.0.1 only.
+# Ports are published on 127.0.0.1 only, except Postgres for the reconciliation on Pi5 (ADR-0010).
 name: shopflow
 
 services:
@@ -7,8 +7,12 @@ services:
     image: postgres:17-bookworm
     mem_limit: 1g
     restart: unless-stopped
+    # Renders pg_hba.conf from the template, then runs the image entrypoint (ADR-0010).
+    entrypoint: ["/shopflow/entrypoint.sh"]
     command:
       - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
       - -c
       - wal_level=logical
       - -c
@@ -23,11 +27,19 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:?set DEBEZIUM_PASSWORD}
+      RECON_READER_PASSWORD: ${RECON_READER_PASSWORD:?set RECON_READER_PASSWORD}
+      PI5_HOST: ${PI5_HOST:?set PI5_HOST}
+      LAPTOP_COMPOSE_SUBNET: ${LAPTOP_COMPOSE_SUBNET:?set LAPTOP_COMPOSE_SUBNET}
     volumes:
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./postgres/entrypoint.sh:/shopflow/entrypoint.sh:ro
+      - ./postgres/pg_hba.conf.template:/shopflow/pg_hba.conf.template:ro
       - pg-data:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:5432:5432"
+      # LAN, for the read-only role from Pi5 only (pg_hba). Needs ip_nonlocal_bind on the laptop:
+      # infra/laptop/etc/sysctl.d/90-shopflow.conf, otherwise Postgres fails to start without Wi-Fi.
+      - "${LAPTOP_HOST:?set LAPTOP_HOST}:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -159,6 +171,13 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+
+# Pinned (the value Docker had assigned): pg_hba trusts this subnet (ADR-0010).
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${LAPTOP_COMPOSE_SUBNET:?set LAPTOP_COMPOSE_SUBNET}
 
 volumes:
   pg-data:
