@@ -5,11 +5,13 @@
 # MV by hand and reads time and memory from system.query_log / system.view_refreshes.
 # Production tables are not touched. Remove afterwards, by hand: DROP DATABASE shopflow_bench
 # Usage: scripts/bench-marts.sh [orders]   (default 1000000; 3 lines per order)
+#        STAGES=checks scripts/bench-marts.sh   only the checks stage, on an already loaded $DB
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ORDERS=${1:-1000000}
 DB=shopflow_bench
 q() { scripts/ch-query.sh "$1"; }
+if [[ ${STAGES:-all} == all ]]; then
 
 ddl=$(mktemp -d)
 trap 'rm -r "$ddl"' EXIT
@@ -105,8 +107,10 @@ q "SELECT 'dim_products', count(), countIf(is_current) FROM $DB.dim_products
    UNION ALL SELECT 'mart_revenue_daily', count(), 0 FROM $DB.mart_revenue_daily
    UNION ALL SELECT 'mart_funnel_daily', count(), sum(created) FROM $DB.mart_funnel_daily
    FORMAT PrettyCompactMonoBlock"
+fi
 
-# Checks under the airflow_reader profile (512 MiB, 2 threads, 120 s; scripts/create-ch-users.sh):
+# Checks under the airflow_reader profile (512 MiB, 2 threads, 120 s, spill past 256 MiB;
+# scripts/create-ch-users.sh):
 # the ClickHouse side of reconciliation (bucket aggregates and one arbitration batch of 16 buckets
 # per table, through the real module) and the 12 DQ queries, pointed at $DB.
 echo "checks under airflow_reader limits:"
@@ -120,7 +124,9 @@ import shopflow_checks.reconciliation as rec
 from shopflow_checks.dq import load_checks
 
 DB = os.environ["DB"]
-LIMITS = "max_memory_usage = 536870912, max_threads = 2, max_execution_time = 120"
+LIMITS = ("max_memory_usage = 536870912, max_threads = 2, max_execution_time = 120,"
+          " max_bytes_before_external_group_by = 268435456,"
+          " max_bytes_before_external_sort = 268435456")
 
 
 def ch_as(label):

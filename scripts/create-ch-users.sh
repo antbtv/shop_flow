@@ -63,8 +63,10 @@ else
         # No readonly: readonly = 2 forbids INSERT even with a grant. Grants limit what it touches,
         # constraints limit what a check may cost: Pi5 is CPU-bound, Spark inserts and refreshes
         # must keep their share (ADR-0004, ADR-0010).
-        "CREATE SETTINGS PROFILE IF NOT EXISTS airflow_reader_profile SETTINGS max_memory_usage = 536870912 MAX 536870912, max_execution_time = 120 MAX 120, max_threads = 2 MAX 2"
-        "ALTER SETTINGS PROFILE airflow_reader_profile SETTINGS max_memory_usage = 536870912 MAX 536870912, max_execution_time = 120 MAX 120, max_threads = 2 MAX 2"
+        # A big GROUP BY spills to disk past 256 MiB instead of failing at 512 MiB (bench 4.17:
+        # DQ checks over 3M lines); daily checks can afford the HDD.
+        "CREATE SETTINGS PROFILE IF NOT EXISTS airflow_reader_profile SETTINGS max_memory_usage = 536870912 MAX 536870912, max_execution_time = 120 MAX 120, max_threads = 2 MAX 2, max_bytes_before_external_group_by = 268435456, max_bytes_before_external_sort = 268435456"
+        "ALTER SETTINGS PROFILE airflow_reader_profile SETTINGS max_memory_usage = 536870912 MAX 536870912, max_execution_time = 120 MAX 120, max_threads = 2 MAX 2, max_bytes_before_external_group_by = 268435456, max_bytes_before_external_sort = 268435456"
         "CREATE USER IF NOT EXISTS airflow_reader IDENTIFIED WITH sha256_hash BY '$airflow_hash' HOST IP '$PI5_COMPOSE_SUBNET'"
         "ALTER USER airflow_reader IDENTIFIED WITH sha256_hash BY '$airflow_hash' HOST IP '$PI5_COMPOSE_SUBNET' SETTINGS PROFILE 'airflow_reader_profile'"
         "REVOKE ALL ON *.* FROM airflow_reader"
