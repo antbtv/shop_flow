@@ -219,6 +219,7 @@ flowchart LR
 - Pi5 получает статический IP (или DHCP-резервацию) в домашней сети.
 - Открытые порты на Pi5: ClickHouse HTTP (8123), ClickHouse native (9000), Airflow webserver (8080).
 - Аутентификация — базовая (домашняя сеть, наружу не пробрасывается); порты наружу не открывать.
+- Ноутбук (с Milestone 4, FR-8): Postgres (5432) на LAN-адресе ноутбука, `pg_hba` пускает из LAN только роль `recon_reader` (только SELECT) с IP Pi5. См. `docs/adr/0010-airflow-pi5-postgres-access.md`.
 
 ### 6.2 Топики брокера сообщений
 
@@ -250,8 +251,12 @@ retail-cdc-platform/
 │   └── streaming_to_clickhouse.py
 ├── clickhouse/
 │   └── ddl/                    # SQL из раздела 5.2
-├── airflow/
+├── airflow/                    # образ Airflow и DAG (ADR-0010)
+│   ├── Dockerfile
 │   └── dags/
+│       ├── shopflow_common/        # подключения, классификация «источник недоступен»
+│       ├── shopflow_checks/        # логика сверки (FR-8)
+│       ├── sql/dq/                 # проверки FR-9
 │       ├── reconciliation_dag.py
 │       ├── data_quality_dag.py
 │       └── retention_dag.py
@@ -286,7 +291,14 @@ AIRFLOW_ADMIN_USER=admin
 AIRFLOW_ADMIN_PASSWORD=changeme
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+
+# Milestone 4 (ADR-0010): сверка Pi5 → Postgres ноутбука
+LAPTOP_HOST=192.168.0.105
+RECON_READER_PASSWORD=changeme
+CLICKHOUSE_AIRFLOW_PASSWORD=changeme
 ```
+
+Полный список переменных — `.env.example` (ноутбук) и `infra/pi5/pi5.env.example` (Pi5).
 
 ## 10. План реализации
 

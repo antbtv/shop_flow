@@ -8,7 +8,7 @@
 - Сеть Pi5: bind портов на LAN-IP, ufw для хоста, `DOCKER-USER` для контейнеров, см. `docs/adr/0003-pi5-network-exposure.md`
 - Дашборд: Grafana или Superset, не решено (PRD, раздел 13). Допущение: на Pi5 резерв 0,5 ГБ под Grafana; Superset, если выберем, запускается на ноутбуке.
 - Память Pi5: жёсткие `mem_limit`, LocalExecutor, урезанный ClickHouse, см. `docs/adr/0004-pi5-memory-budget.md`
-- Доступ Pi5 → Postgres на ноутбуке (для FR-8): решаем в Milestone 4 отдельным ADR.
+- Airflow и сверка: Postgres ноутбука на LAN-адресе, `pg_hba` пускает только `recon_reader` (только SELECT) с IP Pi5; FAB, образ собирается на Pi5; сверка — отсечка `T` по часам PG, бакеты отпечатков как фильтр, арбитраж по ключу; сенсор «источник недоступен» отдельно от `mismatch` и `lagging`; `airflow_reader` без `readonly`, с constraints, см. `docs/adr/0010-airflow-pi5-postgres-access.md`
 - CDC: полный конверт Debezium в JSON без схем, 1 партиция на топик, fsync Kafka на каждое сообщение, REPLICA IDENTITY FULL на 5 таблицах, см. `docs/adr/0005-cdc-contract.md`
 - ClickHouse: версия = `source.lsn` только для таблиц «одна строка Postgres»; `raw_events` по позиции Kafka; `stg_orders` + `stg_order_items`, `fact_orders` поверх них в M3, см. `docs/adr/0006-clickhouse-schema-idempotency.md`
 - Деплой Pi5: `rsync` по явному списку путей без `.env`, отдельный `.env` на Pi5, compose `name: shopflow`, см. `docs/adr/0007-pi5-deploy.md`
@@ -420,13 +420,16 @@
 - [x] **4.0. Ветка** (~10 мин)
   - Сделано (2026-10-02): PR #4 `milestone-3` → `master` влит пользователем, `master` fast-forward до `8eba60f`, ветка `milestone-4` от `master`.
   - Приёмка: `git log master..milestone-3` пусто, текущая ветка `milestone-4`.
-- [ ] **4.1. ADR-0010 и ревью `architect`** (~1 ч)
+- [x] **4.1. ADR-0010 и ревью `architect`** (~1 ч)
   - Пункты 1–6 выше. Правки PRD 6.1 и 8 (дерево `airflow/`), `.env.example` (`LAPTOP_HOST`, `AIRFLOW_CONN_*`).
+  - Сделано (2026-10-02): ADR-0010 принят с правками (5 блокеров, 13 желательных). PRD 6.1, 8, 9, `.env.example`, `pi5.env.example`, ADR-0007 (исключение для пароля `recon_reader`) обновлены.
+  - Блокеры: повтор бакетов с той же `T` не снимает гонку на горячих `inventory`/`orders` → бакеты только фильтр, решение арбитражем по ключу (ключ с `updated_at >= T` или без строки в PG — «в пути»); в журналах `customers`/`products` нет `updated_at` → CH берёт последнюю версию без отсечки, `email` вне сверки; каноническая строка: `NULL` → `''`, время в мс, big-endian MD5 и `sum(toInt128)`, явный список колонок; `readonly = 2` запрещает `INSERT` → профиль без `readonly`, constraints и `max_threads = 2`; `pg_hba`: `local trust` (скрипты через `exec psql`), хост приходит через docker-proxy из подсети compose, а не с `127.0.0.1`.
+  - Желательные: `PythonSensor` в `reschedule` с `soft_fail` вместо retry, `pgcode` 28000/28P01/53300 — `error`, серия по `dq_check_results`; keepalives и `idle_session_timeout`; `T` до секунды; статус `lagging` перед сверкой; подсказка про карантин в `details`; ключ `dq_check_results` по `run_id`, `logical_date` Nullable; гранты на `raw_events` и историю статусов; подсети compose закрепить в текущих значениях; `pg_hba` из шаблона через `sed`; URL-safe пароли; риск той же адресации в чужой сети и маршрут через VPN `amn0`; проверить провайдеры образа; DQ и ретеншн без PG; чистка логов Airflow.
   - Приёмка: вердикт «принять» или «принять с правками», правки внесены.
   - Закрывает: подготовку к FR-8, NFR-2.
 - [ ] **4.2. Доступ к Postgres с Pi5 (ноутбук)** (~1 ч)
-  - Порт в `docker-compose.laptop.yml`, `pg_hba`, роль `recon_reader` в `postgres/init` и идемпотентный скрипт для существующего тома (init работает только на пустом томе).
-  - Приёмка: на Pi5 `docker run --rm postgres:17-bookworm psql "host=$LAPTOP_HOST user=recon_reader dbname=shopflow" -c 'select count(*) from orders'` возвращает число; `INSERT` этой ролью даёт `read-only transaction`; с другого хоста LAN `no pg_hba.conf entry`; `ss -tlnp` показывает 5432 только на `127.0.0.1` и `$LAPTOP_HOST`; Debezium и генератор работают, `scripts/check_pipeline.sh` зелёный.
+  - Порт в `docker-compose.laptop.yml`, закреплённая подсеть compose, `postgres/pg_hba.conf.template` + обёртка entrypoint, sysctl `ip_nonlocal_bind` (`infra/laptop/`), роль `recon_reader` в `postgres/init` и идемпотентный `scripts/create-pg-reader.sh` (init работает только на пустом томе). Пересоздание сети — `down` стека (без `-v`).
+  - Приёмка: на Pi5 `docker run --rm postgres:17-bookworm psql "host=$LAPTOP_HOST user=recon_reader dbname=shopflow" -c 'select count(*) from orders'` возвращает число; `INSERT` этой ролью даёт `read-only transaction`; с другого хоста LAN `no pg_hba.conf entry`; `ss -tlnp` показывает 5432 только на `127.0.0.1` и `$LAPTOP_HOST`; Debezium и генератор работают, `scripts/check_pipeline.sh` зелёный; `client_addr` в `pg_stat_activity` для `recon_reader` = IP Pi5; `ip route get $PI5_HOST` на ноутбуке — `dev wlo1` при включённом VPN.
   - Закрывает: FR-8 (доступ).
   - Риск: ноутбук на Wi-Fi меняет IP, нужна резервация на роутере.
 - [ ] **4.3. ClickHouse: `airflow_reader` и `dq_check_results`** (~45 мин)
