@@ -8,7 +8,10 @@
 # Overrides apply to one exec only; no files or connections change. No secrets are printed.
 set -uo pipefail
 cd ~/shopflow
-exe() { docker compose -f docker-compose.pi5.yml exec -T "$@"; }
+# The script itself arrives on stdin (bash -s): exec must not read it, so stdin is /dev/null
+# unless a step passes its own input (exe_in).
+exe() { docker compose -f docker-compose.pi5.yml exec -T "$@" </dev/null; }
+exe_in() { docker compose -f docker-compose.pi5.yml exec -T "$@"; }
 laptop=$(sed -n 's/^LAPTOP_HOST=//p' .env)
 pg_conn() {  # port, login: a throwaway connection that differs only in what is being tested
     printf '{"conn_type": "postgres", "host": "%s", "port": %s, "schema": "shopflow", "login": "%s", "password": "x", "extra": {"connect_timeout": "10"}}' "$laptop" "$1" "$2"
@@ -28,7 +31,7 @@ exe -e AIRFLOW_CONN_SHOPFLOW_POSTGRES="$(pg_conn 5432 shopflow)" airflow-schedul
     airflow tasks test shopflow_healthcheck check_postgres 2>&1 \
     | grep -oE "(SourceUnavailable|OperationalError)[^\"]{0,110}" | head -2
 echo "== 4. password masking"
-exe airflow-scheduler python - <<'PY' 2>&1 | grep '^mask'
+exe_in airflow-scheduler python - <<'PY' 2>&1 | grep '^mask'
 from airflow.sdk import BaseHook
 from airflow.sdk.execution_time.secrets_masker import redact
 for conn_id in ("shopflow_clickhouse", "shopflow_postgres"):
