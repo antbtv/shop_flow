@@ -111,3 +111,44 @@ def ch():
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
         subprocess.run(["docker", "network", "rm", name], capture_output=True)
+
+
+PG_IMAGE = "postgres:17-alpine"
+
+
+@pytest.fixture(scope="session")
+def pg():
+    """Throwaway Postgres with the OLTP schema (postgres/init/001_schema.sql), psycopg2 conn."""
+    psycopg2 = pytest.importorskip("psycopg2")
+    if not shutil.which("docker"):
+        pytest.skip("docker not available")
+    name = f"shopflow-pgtest-{uuid.uuid4().hex[:8]}"
+    port = _free_port()
+    subprocess.run(
+        ["docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{port}:5432",
+         "-e", "POSTGRES_DB=shopflow", "-e", "POSTGRES_USER=shopflow",
+         "-e", f"POSTGRES_PASSWORD={PASSWORD}", PG_IMAGE],
+        check=True, capture_output=True,
+    )
+    try:
+        for _ in range(60):
+            ready = subprocess.run(
+                ["docker", "exec", name, "pg_isready", "-U", "shopflow", "-h", "127.0.0.1"],
+                capture_output=True,
+            )
+            if ready.returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            pytest.fail("Postgres did not start in 60 s")
+        schema = (ROOT / "postgres/init/001_schema.sql").read_bytes()
+        subprocess.run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1",
+                        "-U", "shopflow", "-d", "shopflow"],
+                       input=schema, check=True, capture_output=True)
+        conn = psycopg2.connect(host="127.0.0.1", port=port, dbname="shopflow",
+                                user="shopflow", password=PASSWORD)
+        conn.autocommit = True
+        yield conn
+        conn.close()
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)

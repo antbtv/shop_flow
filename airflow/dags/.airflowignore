@@ -1,2 +1,3 @@
 # Shared modules, not DAG files: the dag-processor must not parse them (ADR-0010).
 shopflow_common
+shopflow_checks
