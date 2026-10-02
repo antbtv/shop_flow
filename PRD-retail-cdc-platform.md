@@ -256,15 +256,19 @@ retail-cdc-platform/
 ├── airflow/                    # образ Airflow и DAG (ADR-0010)
 │   ├── Dockerfile
 │   └── dags/
-│       ├── shopflow_common/        # подключения, классификация «источник недоступен»
-│       ├── shopflow_checks/        # логика сверки (FR-8)
+│       ├── shopflow_common/        # подключения, «источник недоступен», запись dq_check_results
+│       ├── shopflow_checks/        # сверка (FR-8), DQ (FR-9), ретеншн (NFR-5)
 │       ├── sql/dq/                 # проверки FR-9
 │       ├── reconciliation_dag.py
 │       ├── data_quality_dag.py
 │       └── retention_dag.py
 ├── dashboards/
 ├── infra/
-│   └── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw) и runbook
+│   ├── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw, systemd) и runbook
+│   └── laptop/                 # sysctl ноутбука для доступа Pi5 к Postgres (ADR-0010)
+├── postgres/                   # init-скрипты и шаблон pg_hba
+├── scripts/                    # DDL, пользователи ClickHouse, проверки; pi5/ — скрипты для Pi5
+├── tests/                      # pytest; sql/ — на временных ClickHouse и Postgres
 ├── docs/
 │   └── architecture.md
 └── README.md
