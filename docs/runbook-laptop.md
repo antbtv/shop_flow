@@ -1,6 +1,6 @@
 # Runbook: CDC-стек на ноутбуке и ClickHouse на Pi5
 
-Как поднять и проверить цепочку Postgres → Debezium → Kafka (ноутбук) и ClickHouse (Pi5). Решения: [ADR-0005](adr/0005-cdc-contract.md) (контракт CDC), [ADR-0006](adr/0006-clickhouse-schema-idempotency.md) (схема ClickHouse), [ADR-0007](adr/0007-pi5-deploy.md) (деплой на Pi5), [ADR-0008](adr/0008-spark-streaming-job.md) (Spark), [ADR-0009](adr/0009-scd2-fact-marts.md) (SCD2, факт, витрины). Хост Pi5: [`infra/pi5/README.md`](../infra/pi5/README.md).
+Как поднять и проверить цепочку Postgres → Debezium → Kafka (ноутбук) и ClickHouse (Pi5). Решения: [ADR-0005](adr/0005-cdc-contract.md) (контракт CDC), [ADR-0006](adr/0006-clickhouse-schema-idempotency.md) (схема ClickHouse), [ADR-0007](adr/0007-pi5-deploy.md) (деплой на Pi5), [ADR-0008](adr/0008-spark-streaming-job.md) (Spark), [ADR-0009](adr/0009-scd2-fact-marts.md) (SCD2, факт, витрины), [ADR-0010](adr/0010-airflow-pi5-postgres-access.md) (Airflow, доступ к Postgres, сверка). Хост Pi5: [`infra/pi5/README.md`](../infra/pi5/README.md).
 
 Все команды выполняются из корня репозитория на ноутбуке. Сокращение: `D="docker compose -f docker-compose.laptop.yml"`.
 
@@ -9,6 +9,7 @@
 - Docker и Compose v2, пользователь в группе `docker` (после `usermod -aG docker` нужен перелогин).
 - `jq`, `curl`, `python3`; для тестов `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`.
 - `.env` по образцу `.env.example`. Для ноутбучного стека нужны `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DEBEZIUM_PASSWORD`; для ClickHouse `PI5_HOST`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` (тот же пароль, что в `~/shopflow/.env` на Pi5). Скрипты читают из `.env` только нужные ключи и ничего не печатают.
+- С M4 (ADR-0010) в `.env` ноутбука ещё `LAPTOP_HOST`, `LAPTOP_COMPOSE_SUBNET`, `RECON_READER_PASSWORD`, `CLICKHOUSE_AIRFLOW_PASSWORD`, `PI5_COMPOSE_SUBNET`; пароли — `openssl rand -hex 24` (идут в URI подключения). На ноутбуке установлен `infra/laptop/etc/sysctl.d/90-shopflow.conf` (`ip_nonlocal_bind`), у ноутбука DHCP-резервация по MAC `wlo1`.
 
 ## 2. Запуск стека
 
@@ -20,6 +21,7 @@ scripts/register-connector.sh   # идемпотентный PUT, ждёт "shop
 - При первом старте Postgres выполняет `postgres/init/*`: схема 5.1, `REPLICA IDENTITY FULL`, публикация `shopflow_cdc`, роль `debezium`. Init-скрипты работают только на пустом томе `shopflow_pg-data`; изменения схемы потом накатываются вручную и одновременно со схемой в Spark и DDL ClickHouse (ADR-0005).
 - Первая регистрация коннектора делает снапшот существующих строк (`op=r`). **Генератор на это время остановлен** (ADR-0006: изменение, начатое до создания слота, может проиграть строке снапшота).
 - Порты ноутбука только на `127.0.0.1`: Postgres 5432, Kafka 9092 (с хоста), Connect REST 8083. Контейнерам Kafka доступна как `kafka:29092`.
+- Исключение (M4, FR-8): Postgres ещё и на `${LAPTOP_HOST}:5432` для сверки с Pi5. `pg_hba` собирается при старте из `postgres/pg_hba.conf.template`: из LAN пускается только `recon_reader` с IP Pi5, остальное `reject`. На существующем томе роль создаёт `scripts/create-pg-reader.sh` (идемпотентно).
 - Все сервисы с `restart: unless-stopped`: после перезагрузки ноутбука стек поднимается сам, коннектор продолжает с сохранённых оффсетов без повторного снапшота (проверено в 1.7, сценарий B).
 
 ## 3. Генератор нагрузки
@@ -116,7 +118,7 @@ scripts/check_pipeline.sh                               # Kafka vs raw_events, P
 - Pi5 недоступен: делать ничего не нужно. Запрос падает по таймауту (≤ 2 мин), контейнер перезапускается и ждёт `/ping` с backoff 5 с → потолок 60 с (`waiting for ClickHouse /ping` в логе). События копятся в Kafka. Проверено сценариями 2.9 B (ClickHouse остановлен) и B2 (DROP в `DOCKER-USER`).
 - Зависание (в логе нет новых строк `batch=`, маркер не обновляется): watchdog завершает процесс через 10 мин тишины (`no progress for ... exiting`), Docker перезапускает контейнер.
 - Падение драйвера для проверки рестарта: `docker exec shopflow-spark-1 pkill -9 -x -f "python3 /opt/shopflow/streaming_to_clickhouse.py"`. `docker kill` не подходит: Docker считает его ручной остановкой и по `unless-stopped` контейнер не поднимает.
-- Буфер Kafka: min(7 дней, 1 ГиБ / суточный объём топика). Штатно 7 дней по всем топикам, при `--rate 5` самый короткий у `inventory` ~2,6 дня (ADR-0009, «Последствия»). Простой дольше буфера: раздел 8.
+- Буфер Kafka: min(7 дней, 1 ГиБ / суточный объём топика). Штатно 7 дней по всем топикам, при `--rate 5` самый короткий у `inventory` ~2,6 дня (ADR-0009, «Последствия»). Простой дольше буфера: раздел 9.
 
 Карантин (`WARN ... quarantined=N sample=[(pk, kafka_offset, reason)]`): строка не легла в типы ClickHouse, в `stg_*` не записана, но есть в `raw_events`. Посмотреть событие:
 
@@ -124,7 +126,7 @@ scripts/check_pipeline.sh                               # Kafka vs raw_events, P
 scripts/ch-query.sh "SELECT payload FROM raw_events WHERE topic = 'cdc.public.orders' AND kafka_offset = <offset> LIMIT 1"
 ```
 
-После исправления схемы в `spark-jobs/shopflow_stream/transforms.py` (и DDL) перезалить stg из `raw_events` (раздел 7, «Дозаливка») или сбросить чекпойнт (раздел 8), пока события ещё в Kafka.
+После исправления схемы в `spark-jobs/shopflow_stream/transforms.py` (и DDL) перезалить stg из `raw_events` (раздел 7, «Дозаливка») или сбросить чекпойнт (раздел 9), пока события ещё в Kafka.
 
 ## 7. Модель данных: измерения, факт, витрины
 
@@ -164,7 +166,67 @@ $D run --rm --no-deps --entrypoint /opt/spark/bin/spark-submit spark \
 
 Без `--from/--to` берёт последние 30 дней. Через 2 мин `dim_*` и витрины пересчитаются сами (или `SYSTEM REFRESH VIEW`), затем `check_pipeline.sh`.
 
-## 8. Аварии
+## 8. Airflow на Pi5: сверка, качество, ретеншн
+
+Airflow 3.1 (LocalExecutor, FAB) в `docker-compose.pi5.yml`, образ `airflow/Dockerfile` собирается на Pi5. UI: `http://$PI5_HOST:8080`, пользователь `admin`, пароль в `~/shopflow/.env` на Pi5 (`AIRFLOW_ADMIN_PASSWORD`). Деплой — раздел 5 (`rsync` `airflow/`, `build`, `up -d`); новые файлы DAG dag-processor видит за ≤ 5 мин или сразу после `restart airflow-dag-processor`.
+
+| DAG | Расписание (МСК) | Что делает | Нужен ноутбук |
+| --- | --- | --- | --- |
+| `shopflow_reconciliation` | 20:00 | FR-8: сверка 5 таблиц Postgres ↔ ClickHouse | да, ждёт до 2 ч |
+| `shopflow_data_quality` | 20:30 | FR-9: 12 проверок `airflow/dags/sql/dq/*.sql` | нет |
+| `shopflow_retention` | 04:00 | NFR-5: TTL `raw_events`, размеры таблиц, логи Airflow > 30 дней | нет |
+| `shopflow_healthcheck` | вручную | связь с ClickHouse и Postgres | да |
+
+Метабазу Airflow чистит не DAG, а systemd-таймер Pi5 `shopflow-airflow-db-clean.timer` (вс 04:30, > 30 дней): Airflow 3 закрывает метабазу для задач. Установка — в шапке `infra/pi5/etc/systemd/system/shopflow-airflow-db-clean.service`.
+
+После снятия DAG с паузы Airflow один раз запускает последний пропущенный интервал (`scheduled__...`); `catchup=False` остальные не догоняет. Пропущенный из-за выключенного Pi5 запуск — вручную.
+
+### Скрипты (запуск с ноутбука, выполняются на Pi5, секретов не печатают)
+
+```bash
+ssh pi5 'bash -s -- trigger shopflow_reconciliation' < scripts/pi5/airflow-api.sh      # запуск и ожидание, состояния задач
+ssh pi5 'bash -s -- trigger shopflow_data_quality simulate_violation=true' < scripts/pi5/airflow-api.sh  # проверка пути «нарушение» без данных
+ssh pi5 'SKIP_WAIT=1 bash -s -- trigger shopflow_reconciliation' < scripts/pi5/airflow-api.sh  # проверка «ноутбук выключен»
+ssh pi5 'bash -s' < scripts/pi5/reconcile-once.sh    # разовая сверка логикой DAG, вывод в терминал
+ssh pi5 'bash -s' < scripts/pi5/airflow-smoke.sh     # импорт DAG, подключения, маскирование паролей
+ssh pi5 'bash -s' < scripts/pi5/loadtest-m4.sh       # память стека с тремя DAG (15 мин, генератор на ноутбуке)
+```
+
+### Результаты: `dq_check_results`
+
+Одна строка на (запуск, проверка, таблица), сводка — `table_name = ''`; читать с `FINAL`.
+
+```bash
+scripts/ch-query.sh "SELECT dag_id, run_id, check_name, table_name, status, violations, details
+  FROM dq_check_results FINAL WHERE checked_at > now() - INTERVAL 2 DAY AND status != 'ok'
+  ORDER BY checked_at FORMAT Vertical"
+```
+
+| Статус | Значит | Что делать |
+| --- | --- | --- |
+| `ok` | всё сошлось; `in_flight` в `details` — ключи, изменённые после отсечки `T`, это норма | ничего |
+| `violation` | сверка: ключи `missing_in_ch` / `different` / `extra_in_ch` (до 20 в `details`); DQ: `sample` и `hint` | `missing_in_ch` — искать ключ в `raw_events` (карантин, ADR-0008), дозалить `backfill_from_raw.py` (раздел 7) |
+| `lagging` | Postgres менялся > 5 мин назад, а в `raw_events` ничего после `T`: поток стоит или догоняет (NFR-3) | проверить Spark и коннектор (раздел 6, `/debezium-debug`), после догона запустить сверку вручную |
+| `source_unavailable` | ноутбук не ответил за 2 ч; DAG зелёный, второй раз подряд — красный | включить ноутбук или запустить сверку вручную; ручной успешный запуск сбрасывает серию |
+| `error` | ошибка, не «нет ноутбука»: `pg_hba`, пароль, лимит соединений, сломанная проверка | текст в `details` и в логе задачи |
+
+Тестовые строки M4 (`lagging`, `source_unavailable`, `simulated_violation` 2026-10-02) оставлены, их видно по `run_id` и `check_name`.
+
+### Ноутбук выключен или в другой сети
+
+Сверка ждёт Postgres до 2 ч (сенсор в режиме reschedule, слот не держит), затем пишет `source_unavailable`. Ошибки с SQLSTATE (`28000`/`28P01` — `pg_hba` или пароль, `53300`) — это `error`, а не «нет ноутбука». DQ и ретеншн работают без ноутбука. Сменился IP ноутбука или Pi5 — поправить `LAPTOP_HOST`/`PI5_HOST` в обоих `.env`, перезапустить Postgres ноутбука (пересоберётся `pg_hba`) и Airflow на Pi5.
+
+### Тесты и проверки кода
+
+```bash
+.venv/bin/python -m pytest -q                         # всё, включая SQL на временных ClickHouse/Postgres (Docker)
+SHOPFLOW_SPARK_TESTS=1 .venv/bin/python -m pytest -q tests/sql/test_backfill.py   # дозаливка через Spark, ~30 с
+.venv/bin/sqlfluff lint clickhouse/ddl airflow/dags/sql
+```
+
+`tests/test_dags.py` разбирает DAG в образе `shopflow-airflow:3.1.0` (`docker build -t shopflow-airflow:3.1.0 airflow/`). `scripts/bench-marts.sh` — замер витрин на 1 млн заказов в отдельной базе `shopflow_bench` (ADR-0009, порог перехода `fact_orders` на таблицу); базу потом удалить вручную.
+
+## 9. Аварии
 
 ### Слот потерян (`wal_status = lost`)
 
@@ -216,7 +278,7 @@ $D exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server loc
 
 Если сломан источник (конфиг Debezium, SMT), исправить его: следующие события будут корректны, но битое остаётся в топике. Пропуск события — новый чекпойнт со `startingOffsets` за ним. **Процедура не прогонялась**, до применения согласовать и записать в ADR.
 
-## 9. Остановка
+## 10. Остановка
 
 ```bash
 $D stop            # остановить, данные сохраняются
