@@ -24,11 +24,11 @@ def serialize(result) -> dict:
         "buckets_differ": result.buckets_differ,
         "in_flight": result.in_flight,
         "missing_in_ch": result.missing_in_ch[:MAX_KEYS],
-        "missing_total": len(result.missing_in_ch),
+        "missing_total": result.missing_total,
         "different": result.different[:MAX_KEYS],
-        "different_total": len(result.different),
+        "different_total": result.different_total,
         "extra_in_ch": result.extra_in_ch[:MAX_KEYS],
-        "extra_total": len(result.extra_in_ch),
+        "extra_total": result.extra_total,
         "details": result.details(),
     }
 

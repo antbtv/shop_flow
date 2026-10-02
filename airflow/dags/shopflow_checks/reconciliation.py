@@ -28,6 +28,11 @@ from datetime import UTC, datetime, timedelta
 BUCKETS = 256
 CUTOFF_LAG = timedelta(minutes=15)
 SAMPLE = 20
+# Key arbitration fetches this many differing buckets at a time and keeps at most KEEP_KEYS
+# keys of each kind (counts stay exact): a run where most buckets differ must not pull a whole
+# table into the scheduler container (1152m, shared with another task, ADR-0004).
+ARBITRATION_BATCH = 16
+KEEP_KEYS = 1000
 
 Rows = list[tuple]
 PgQuery = Callable[[str, dict], Rows]
@@ -161,7 +166,9 @@ def _bucket(spec: TableSpec, pg: bool = False) -> str:
     Postgres variant spells the modulo %%."""
     mod = "%%" if pg else "%"
     if spec.key == ("product_id", "warehouse_id"):
-        return f"((product_id * 1000 + warehouse_id) {mod} {BUCKETS})"
+        # bigint in Postgres: product_id * 1000 leaves int4 range past ~2.1M products.
+        product = "product_id::bigint" if pg else "toInt64(product_id)"
+        return f"(({product} * 1000 + warehouse_id) {mod} {BUCKETS})"
     return f"({spec.key[0]} {mod} {BUCKETS})"
 
 
@@ -231,14 +238,26 @@ class TableResult:
     ch_rows: int = 0
     buckets_differ: int = 0
     in_flight: int = 0
+    # Keys of each kind, at most KEEP_KEYS; *_total are the exact counts.
     missing_in_ch: list[str] = field(default_factory=list)
     different: list[str] = field(default_factory=list)
     # Candidates only: violations after recheck_extra().
     extra_in_ch: list[str] = field(default_factory=list)
+    missing_total: int = 0
+    different_total: int = 0
+    extra_total: int = 0
 
     @property
     def violations(self) -> int:
-        return len(self.missing_in_ch) + len(self.different) + len(self.extra_in_ch)
+        return self.missing_total + self.different_total + self.extra_total
+
+    def add(self, kind: str, key: str) -> None:
+        keys = getattr(self, kind)
+        if len(keys) < KEEP_KEYS:
+            keys.append(key)
+        total = {"missing_in_ch": "missing_total", "different": "different_total",
+                 "extra_in_ch": "extra_total"}[kind]
+        setattr(self, total, getattr(self, total) + 1)
 
     def details(self) -> dict:
         details = {
@@ -248,7 +267,7 @@ class TableResult:
             "different": self.different[:SAMPLE],
             "extra_in_ch": self.extra_in_ch[:SAMPLE],
         }
-        if self.missing_in_ch:
+        if self.missing_total:
             # Quarantine is legal absence (ADR-0008): the event is in raw_events.
             details["hint"] = ("missing keys may be quarantined: look them up in raw_events,"
                                " reload with spark-jobs/backfill_from_raw.py")
@@ -268,13 +287,21 @@ def reconcile_table(spec: TableSpec, pg: PgQuery, ch: ChQuery, cutoff: datetime)
     if not differ:
         return result
 
+    for start in range(0, len(differ), ARBITRATION_BATCH):
+        _arbitrate(spec, pg, ch, cutoff, differ[start:start + ARBITRATION_BATCH], result)
+    return result
+
+
+def _arbitrate(spec: TableSpec, pg: PgQuery, ch: ChQuery, cutoff: datetime,
+               buckets: list[int], result: TableResult) -> None:
+    """Judge every key of these buckets; only counts and capped key lists are kept."""
     # ClickHouse first, Postgres second: a key that changes in between shows up as hot in
     # Postgres and is skipped, never judged against a newer ClickHouse row.
     ch_keys = {
         key: int(h)
         for key, h in ch(
             f"SELECT {_ch_key(spec)}, toString({ch_fingerprint(spec)}) FROM ({spec.ch_source})"
-            f" WHERE {_ch_where(spec, cutoff)} AND {_bucket(spec)} IN ({_ints(differ)})"
+            f" WHERE {_ch_where(spec, cutoff)} AND {_bucket(spec)} IN ({_ints(buckets)})"
         )
     }
     pg_keys = {
@@ -282,7 +309,7 @@ def reconcile_table(spec: TableSpec, pg: PgQuery, ch: ChQuery, cutoff: datetime)
         for key, h, hot in pg(
             f"SELECT {_pg_key(spec)}, ({pg_fingerprint(spec)})::text, cut >= %(cutoff)s"
             f" FROM ({spec.pg_source}) AS s WHERE {_bucket(spec, pg=True)} = ANY(%(buckets)s)",
-            {"cutoff": cutoff, "buckets": differ},
+            {"cutoff": cutoff, "buckets": buckets},
         )
     }
     for key in sorted(set(ch_keys) | set(pg_keys), key=_key_order):
@@ -290,12 +317,11 @@ def reconcile_table(spec: TableSpec, pg: PgQuery, ch: ChQuery, cutoff: datetime)
         if in_pg and pg_keys[key][1]:
             result.in_flight += 1  # changed in Postgres at or after T
         elif in_pg and not in_ch:
-            result.missing_in_ch.append(key)
+            result.add("missing_in_ch", key)
         elif in_pg and pg_keys[key][0] != ch_keys[key]:
-            result.different.append(key)
+            result.add("different", key)
         elif in_ch and not in_pg:
-            result.extra_in_ch.append(key)  # deleted in Postgres: the tombstone may be on its way
-    return result
+            result.add("extra_in_ch", key)  # deleted in Postgres: the tombstone may be on its way
 
 
 def recheck_extra(spec: TableSpec, keys: list[str], pg: PgQuery, ch: ChQuery) -> list[str]:

@@ -40,11 +40,14 @@ def shopflow_data_quality():
             checks.append(SIMULATED)
 
         client = clickhouse_client()
-        results = run_all(checks, lambda sql: client.query(sql).result_rows)
-        summary = summarize(results)
-        write_results(client, dag_id=ti.dag_id, run_id=ti.run_id,
-                      logical_date=context.get("logical_date"), check_name=None,
-                      rows=[(SUMMARY_CHECK, summary), *results])
+        try:
+            results = run_all(checks, lambda sql: client.query(sql).result_rows)
+            summary = summarize(results)
+            write_results(client, dag_id=ti.dag_id, run_id=ti.run_id,
+                          logical_date=context.get("logical_date"), check_name=None,
+                          rows=[(SUMMARY_CHECK, summary), *results])
+        finally:
+            client.close()
         if summary.status != "ok":
             failing = {name: r.details for name, r in results if r.status != "ok"}
             raise AirflowFailException(f"data quality {summary.status}: {failing}")

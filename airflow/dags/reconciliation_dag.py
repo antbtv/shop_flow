@@ -21,10 +21,15 @@ RECHECK_AFTER = timedelta(minutes=10)
 
 
 def _clients():
+    """(pg_conn, client, pg, ch); the caller closes both connections."""
     from shopflow_common.connections import clickhouse_client, postgres_connect
 
     pg_conn = postgres_connect()
-    client = clickhouse_client()
+    try:
+        client = clickhouse_client()
+    except Exception:
+        pg_conn.close()  # recon_reader has CONNECTION LIMIT 2
+        raise
 
     def pg(sql, params=None):
         with pg_conn.cursor() as cur:
@@ -34,7 +39,12 @@ def _clients():
     def ch(sql):
         return [tuple(row) for row in client.query(sql).result_rows]
 
-    return pg_conn, pg, ch
+    return pg_conn, client, pg, ch
+
+
+def _close(pg_conn, client) -> None:
+    pg_conn.close()
+    client.close()
 
 
 @dag(
@@ -70,7 +80,7 @@ def shopflow_reconciliation():
         from shopflow_common.errors import SourceUnavailable
 
         try:
-            pg_conn, pg, ch = _clients()
+            pg_conn, client, pg, ch = _clients()
         except SourceUnavailable:
             return {"source_unavailable": True}  # went away between the sensor and here
         try:
@@ -81,7 +91,7 @@ def shopflow_reconciliation():
             run["finished_at"] = datetime.now(UTC).isoformat()
             return run
         finally:
-            pg_conn.close()
+            _close(pg_conn, client)
 
     @task.sensor(mode="reschedule", poke_interval=120, timeout=60 * 60)
     def recheck(run: dict) -> PokeReturnValue:
@@ -96,23 +106,28 @@ def shopflow_reconciliation():
         from shopflow_common.errors import SourceUnavailable
 
         try:
-            pg_conn, pg, ch = _clients()
+            pg_conn, client, pg, ch = _clients()
         except SourceUnavailable:
             # Cannot confirm the deletions now: keep them out of the count, say so.
             for table in run["tables"]:
                 table["extra_in_ch"], table["extra_total"] = [], 0
+                table["details"].pop("extra_in_ch", None)
             run["recheck"] = "skipped: Postgres unavailable"
             return PokeReturnValue(is_done=True, xcom_value=run)
         try:
             for table in run["tables"]:
-                if table["extra_in_ch"]:
-                    still = recheck_extra(TABLES_BY_NAME[table["table"]], table["extra_in_ch"],
-                                          pg, ch)
-                    table["extra_in_ch"], table["extra_total"] = still, len(still)
+                checked = table["extra_in_ch"]
+                if checked:
+                    still = recheck_extra(TABLES_BY_NAME[table["table"]], checked, pg, ch)
+                    # Keys beyond the kept sample were not rechecked: they stay counted.
+                    table["extra_total"] += len(still) - len(checked)
+                    table["extra_in_ch"] = still
                     table["details"]["extra_in_ch"] = still[:20]
+                    if table["extra_total"] > len(still):
+                        table["details"]["extra_rechecked"] = f"{len(checked)} of the candidates"
             run["recheck"] = "done"
         finally:
-            pg_conn.close()
+            _close(pg_conn, client)
         return PokeReturnValue(is_done=True, xcom_value=run)
 
     @task(trigger_rule="all_done", execution_timeout=timedelta(minutes=5))
@@ -130,11 +145,15 @@ def shopflow_reconciliation():
         outcome = reconciliation_outcome(sensor_state, run)
 
         client = clickhouse_client()
-        previous = previous_status(client, dag_id=ti.dag_id, check_name=CHECK, run_id=ti.run_id)
-        cutoff = datetime.fromisoformat(run["cutoff"]) if run and run.get("cutoff") else None
-        write_results(client, dag_id=ti.dag_id, run_id=ti.run_id,
-                      logical_date=context.get("logical_date"), check_name=CHECK,
-                      rows=outcome.rows, cutoff=cutoff)
+        try:
+            previous = previous_status(client, dag_id=ti.dag_id, check_name=CHECK,
+                                       run_id=ti.run_id)
+            cutoff = datetime.fromisoformat(run["cutoff"]) if run and run.get("cutoff") else None
+            write_results(client, dag_id=ti.dag_id, run_id=ti.run_id,
+                          logical_date=context.get("logical_date"), check_name=CHECK,
+                          rows=outcome.rows, cutoff=cutoff)
+        finally:
+            client.close()
         if should_fail(outcome, previous):
             raise AirflowFailException(
                 f"reconciliation {outcome.status} (previous run: {previous}):"

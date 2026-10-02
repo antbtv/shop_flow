@@ -9,7 +9,7 @@ x-airflow: &airflow
   build: ./airflow
   image: shopflow-airflow:3.1.0
   restart: unless-stopped
-  environment:
+  environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     # Two tasks at a time fit the scheduler limit (ADR-0004); sensors wait in reschedule mode.
     AIRFLOW__CORE__PARALLELISM: "2"
@@ -26,18 +26,6 @@ x-airflow: &airflow
     AIRFLOW__API__BASE_URL: http://${PI5_HOST:?set PI5_HOST}:8080
     # Lightweight HTTP health endpoint instead of spawning the airflow CLI in a healthcheck.
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "True"
-    # Connections live in .env, not in the metadata DB (ADR-0010). Passwords are hex: URI-safe.
-    AIRFLOW_CONN_SHOPFLOW_CLICKHOUSE: >-
-      {"conn_type": "generic", "host": "clickhouse", "port": 8123, "schema": "shopflow",
-      "login": "airflow_reader", "password": "${CLICKHOUSE_AIRFLOW_PASSWORD:?set CLICKHOUSE_AIRFLOW_PASSWORD}"}
-    # Laptop Postgres, read-only role (FR-8). Keepalives: a laptop that falls asleep mid-query
-    # must break the connection instead of hanging the task (statement_timeout is server-side).
-    AIRFLOW_CONN_SHOPFLOW_POSTGRES: >-
-      {"conn_type": "postgres", "host": "${LAPTOP_HOST:?set LAPTOP_HOST}", "port": 5432,
-      "schema": "shopflow", "login": "recon_reader",
-      "password": "${RECON_READER_PASSWORD:?set RECON_READER_PASSWORD}",
-      "extra": {"connect_timeout": "10", "keepalives": "1", "keepalives_idle": "30",
-      "keepalives_interval": "10", "keepalives_count": "3"}}
   volumes:
     - ./airflow/dags:/opt/airflow/dags:ro
     - airflow-logs:/opt/airflow/logs
@@ -127,6 +115,22 @@ services:
     # LocalExecutor runs tasks here: ~340 MB per task, parallelism 2 (ADR-0004).
     mem_limit: 1152m
     command: scheduler
+    # Connections only here: LocalExecutor runs every task in this container, so the api-server
+    # (reachable from the LAN) and the dag-processor never hold the database passwords.
+    environment:
+      <<: *airflow-env
+      # Connections live in .env, not in the metadata DB (ADR-0010). Passwords are hex: URI-safe.
+      AIRFLOW_CONN_SHOPFLOW_CLICKHOUSE: >-
+        {"conn_type": "generic", "host": "clickhouse", "port": 8123, "schema": "shopflow",
+        "login": "airflow_reader", "password": "${CLICKHOUSE_AIRFLOW_PASSWORD:?set CLICKHOUSE_AIRFLOW_PASSWORD}"}
+      # Laptop Postgres, read-only role (FR-8). Keepalives: a laptop that falls asleep mid-query
+      # must break the connection instead of hanging the task (statement_timeout is server-side).
+      AIRFLOW_CONN_SHOPFLOW_POSTGRES: >-
+        {"conn_type": "postgres", "host": "${LAPTOP_HOST:?set LAPTOP_HOST}", "port": 5432,
+        "schema": "shopflow", "login": "recon_reader",
+        "password": "${RECON_READER_PASSWORD:?set RECON_READER_PASSWORD}",
+        "extra": {"connect_timeout": "10", "keepalives": "1", "keepalives_idle": "30",
+        "keepalives_interval": "10", "keepalives_count": "3"}}
     # Let running tasks finish their ClickHouse insert before SIGKILL.
     stop_grace_period: 60s
     healthcheck:

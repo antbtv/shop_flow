@@ -33,11 +33,14 @@ def write_results(client, *, dag_id: str, run_id: str, logical_date: datetime | 
 
 
 def previous_status(client, *, dag_id: str, check_name: str, run_id: str) -> str | None:
-    """Summary status of the latest earlier run of this check (table_name '')."""
+    """Summary status of the latest earlier scheduled run of this check (table_name '').
+    Only scheduled runs count: a manual or test run (SKIP_WAIT, a recovery check) must neither
+    start nor break the "two days in a row" series."""
     rows = client.query(
         f"SELECT status FROM {TABLE} FINAL"
         " WHERE dag_id = {dag_id:String} AND check_name = {check:String}"
         " AND table_name = '' AND run_id != {run_id:String}"
+        " AND startsWith(run_id, 'scheduled__')"
         " ORDER BY checked_at DESC LIMIT 1",
         parameters={"dag_id": dag_id, "check": check_name, "run_id": run_id},
     ).result_rows

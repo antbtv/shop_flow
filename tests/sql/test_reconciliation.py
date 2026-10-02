@@ -265,3 +265,19 @@ def test_fresh_changes_alone_are_not_lagging(db):
     # Changed a minute ago: may still be on its way (NFR-3 allows 5 min).
     db.pg("UPDATE orders SET updated_at = now() - interval '1 minute' WHERE order_id = 1")
     assert not pipeline_lagging(db.pg, db.ch_rows, cutoff)
+
+
+def test_arbitration_in_batches_keeps_exact_counts_and_a_capped_sample(db, monkeypatch):
+    import shopflow_checks.reconciliation as rec
+
+    # Every order missing in ClickHouse: all buckets differ, one bucket per batch, 5 keys kept.
+    monkeypatch.setattr(rec, "ARBITRATION_BATCH", 1)
+    monkeypatch.setattr(rec, "KEEP_KEYS", 5)
+    db.ch_insert("stg_orders", "order_id, customer_id, status, created_at, updated_at, version,"
+                 " is_deleted, event_time",
+                 [(o, 1, "paid", OLD, ms(OLD), 999, 1, ms(OLD)) for o in range(1, 61)])
+    result = db.reconcile("orders")
+    assert result.missing_total == 60
+    assert result.violations == 60
+    assert len(result.missing_in_ch) == 5
+    assert result.buckets_differ == 60

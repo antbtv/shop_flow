@@ -67,7 +67,11 @@ def postgres_available() -> bool:
         pg = postgres_connect()
     except SourceUnavailable:
         return False
-    with pg, pg.cursor() as cur:
-        cur.execute("SELECT 1")
-    pg.close()
+    # Closed on every path: recon_reader has CONNECTION LIMIT 2, a leaked session would make
+    # the next run fail with 53300.
+    try:
+        with pg.cursor() as cur:
+            cur.execute("SELECT 1")
+    finally:
+        pg.close()
     return True

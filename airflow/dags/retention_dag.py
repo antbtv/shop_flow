@@ -41,20 +41,23 @@ def shopflow_retention():
         context = get_current_context()
         ti = context["ti"]
         client = clickhouse_client()
-        ch = lambda sql: client.query(sql).result_rows  # noqa: E731
-
-        checks = [("raw_events_ttl", raw_ttl_check(ch))]
         try:
-            logs = clean_logs(Path(LOGS_ROOT))
-            checks.append(("airflow_logs", CheckResult("airflow_logs", "ok", details=logs)))
-        except OSError as exc:
-            checks.append(("airflow_logs", CheckResult(
-                "airflow_logs", "error", details={"error": f"{type(exc).__name__}: {exc}"})))
-        sizes = [("table_size", r) for r in table_sizes(ch)]
-        summary = summarize(checks)
-        write_results(client, dag_id=ti.dag_id, run_id=ti.run_id,
-                      logical_date=context.get("logical_date"), check_name=None,
-                      rows=[("retention", summary), *checks, *sizes])
+            ch = lambda sql: client.query(sql).result_rows  # noqa: E731
+
+            checks = [("raw_events_ttl", raw_ttl_check(ch))]
+            try:
+                logs = clean_logs(Path(LOGS_ROOT))
+                checks.append(("airflow_logs", CheckResult("airflow_logs", "ok", details=logs)))
+            except OSError as exc:
+                checks.append(("airflow_logs", CheckResult(
+                    "airflow_logs", "error", details={"error": f"{type(exc).__name__}: {exc}"})))
+            sizes = [("table_size", r) for r in table_sizes(ch)]
+            summary = summarize(checks)
+            write_results(client, dag_id=ti.dag_id, run_id=ti.run_id,
+                          logical_date=context.get("logical_date"), check_name=None,
+                          rows=[("retention", summary), *checks, *sizes])
+        finally:
+            client.close()
         if summary.status != "ok":
             failing = {name: r.details for name, r in checks if r.status != "ok"}
             raise AirflowFailException(f"retention {summary.status}: {failing}")

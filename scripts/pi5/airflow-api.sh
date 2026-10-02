@@ -10,17 +10,18 @@
 # are the run conf:  ssh pi5 'bash -s -- trigger shopflow_data_quality simulate_violation=true' < ...
 set -euo pipefail
 cd ~/shopflow
-env_value() { sed -n "s/^$1=//p" .env | tail -n 1; }
+env_value() { sed -n "s/^$1=//p" .env | tail -n 1 | tr -d '\r'; }
 API="http://$(env_value PI5_HOST):8080"
-TOKEN=$(python3 - "$(env_value AIRFLOW_ADMIN_USER)" "$API" <<PY
-import json, sys, urllib.request
-body = json.dumps({"username": sys.argv[1], "password": """$(env_value AIRFLOW_ADMIN_PASSWORD)"""}).encode()
-req = urllib.request.Request(sys.argv[2] + "/auth/token", body, {"Content-Type": "application/json"})
-print(json.load(urllib.request.urlopen(req))["access_token"])
-PY
-)
-call() {  # method path [json]
-    curl -sS --fail-with-body -X "$1" -H "Authorization: Bearer $TOKEN" \
+# The password reaches Python through the environment of that one process: not in argv, not
+# pasted into source code (quotes or backslashes in it cannot break or inject anything).
+TOKEN=$(AF_USER=$(env_value AIRFLOW_ADMIN_USER) AF_PASSWORD=$(env_value AIRFLOW_ADMIN_PASSWORD) \
+    python3 -c '
+import json, os, sys, urllib.request
+body = json.dumps({"username": os.environ["AF_USER"], "password": os.environ["AF_PASSWORD"]}).encode()
+req = urllib.request.Request(sys.argv[1] + "/auth/token", body, {"Content-Type": "application/json"})
+print(json.load(urllib.request.urlopen(req))["access_token"])' "$API")
+call() {  # method path [json]; the token goes in a header read from a file descriptor, not argv
+    curl -sS --fail-with-body -X "$1" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
         -H 'Content-Type: application/json' "$API/api/v2$2" ${3:+-d "$3"}
 }
 states() {

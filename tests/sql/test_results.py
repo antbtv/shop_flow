@@ -46,12 +46,25 @@ def test_retried_task_rewrites_its_rows(client):
                         " ORDER BY table_name").result_rows == [("", "ok"), ("orders", "ok")]
 
 
-def test_previous_status_is_the_latest_other_run(client):
-    assert previous_status(client, dag_id="d", check_name="reconciliation", run_id="r3") is None
-    write(client, "r1", "ok", logical_date=datetime(2026, 10, 1, 17, tzinfo=UTC))
-    write(client, "r2", "source_unavailable", logical_date=datetime(2026, 10, 2, 17, tzinfo=UTC))
+def test_previous_status_is_the_latest_other_scheduled_run(client):
     assert previous_status(client, dag_id="d", check_name="reconciliation",
-                           run_id="r3") == "source_unavailable"
+                           run_id="scheduled__3") is None
+    write(client, "scheduled__1", "ok", logical_date=datetime(2026, 10, 1, 17, tzinfo=UTC))
+    write(client, "scheduled__2", "source_unavailable",
+          logical_date=datetime(2026, 10, 2, 17, tzinfo=UTC))
+    assert previous_status(client, dag_id="d", check_name="reconciliation",
+                           run_id="scheduled__3") == "source_unavailable"
     # The current run never counts as its own previous one.
     assert previous_status(client, dag_id="d", check_name="reconciliation",
-                           run_id="r2") == "ok"
+                           run_id="scheduled__2") == "ok"
+
+
+def test_manual_runs_neither_start_nor_break_the_series(client):
+    write(client, "scheduled__1", "source_unavailable")
+    write(client, "manual__test", "ok")  # a recovery check by hand
+    assert previous_status(client, dag_id="d", check_name="reconciliation",
+                           run_id="scheduled__2") == "source_unavailable"
+    write(client, "manual__skip_wait", "source_unavailable")  # a test of the "laptop off" path
+    write(client, "scheduled__2", "ok")
+    assert previous_status(client, dag_id="d", check_name="reconciliation",
+                           run_id="scheduled__3") == "ok"
