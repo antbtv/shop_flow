@@ -5,7 +5,8 @@
 #   ssh pi5 'bash -s -- states shopflow_reconciliation <run_id>' < scripts/pi5/airflow-api.sh
 #   ssh pi5 'bash -s -- set-state shopflow_reconciliation <run_id> wait_for_postgres skipped' < ...
 # trigger unpauses the DAG (it then also runs on its schedule), waits up to WAIT_S (default
-# 1800 s) for the run to finish and prints the task states.
+# 1800 s) for the run to finish and prints the task states. SKIP_WAIT=1 (test of "laptop off")
+# turns wait_for_postgres to skipped as soon as it is waiting.
 set -euo pipefail
 cd ~/shopflow
 env_value() { sed -n "s/^$1=//p" .env | tail -n 1; }
@@ -25,7 +26,7 @@ states() {
     call GET "/dags/$1/dagRuns/$2/taskInstances" | python3 -c '
 import json, sys
 for ti in json.load(sys.stdin)["task_instances"]:
-    print(f"  {ti[\"task_id\"]:20} {ti[\"state\"]}  try={ti[\"try_number\"]}")'
+    print("  %-20s %s  try=%s" % (ti["task_id"], ti["state"], ti["try_number"]))'
 }
 
 case "${1:-}" in
@@ -35,6 +36,22 @@ trigger)
     run=$(call POST "/dags/$dag/dagRuns" '{"logical_date": null}' \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["dag_run_id"])')
     echo "run_id $run"
+    if [[ ${SKIP_WAIT:-0} == 1 ]]; then
+        # Test of "laptop off": once wait_for_postgres is waiting, end the wait as its 2 h
+        # timeout would (soft_fail -> skipped) instead of sitting it out.
+        for _ in $(seq 40); do
+            state=$(call GET "/dags/$dag/dagRuns/$run/taskInstances/wait_for_postgres" \
+                | python3 -c 'import json, sys; print(json.load(sys.stdin)["state"])')
+            [[ $state == up_for_reschedule ]] && break
+            sleep 3
+        done
+        echo "wait_for_postgres $state"
+        if [[ $state == up_for_reschedule ]]; then
+            call PATCH "/dags/$dag/dagRuns/$run/taskInstances/wait_for_postgres" \
+                '{"new_state": "skipped"}' >/dev/null
+            echo "wait_for_postgres -> skipped"
+        fi
+    fi
     for _ in $(seq $(( ${WAIT_S:-1800} / 15 ))); do
         state=$(call GET "/dags/$dag/dagRuns/$run" \
             | python3 -c 'import json, sys; print(json.load(sys.stdin)["state"])')
