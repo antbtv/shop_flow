@@ -14,6 +14,9 @@ x-airflow: &airflow
     # Two tasks at a time fit the scheduler limit (ADR-0004); sensors wait in reschedule mode.
     AIRFLOW__CORE__PARALLELISM: "2"
     AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    # DAGs import shopflow_common. Task runs put the bundle root on sys.path themselves, the CLI
+    # (airflow dags test, tasks test) does not: same folder, so both behave the same.
+    PYTHONPATH: /opt/airflow/dags
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
