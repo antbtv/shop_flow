@@ -26,8 +26,12 @@ PROFILE = ROOT / "clickhouse/users.d/shopflow-profile.xml"
 
 
 class ClickHouse:
-    def __init__(self, url: str):
+    def __init__(self, url: str, container: str, network: str, subnet: str):
         self.url = url
+        # For clients in other containers (Spark): host = container name on this network.
+        self.container = container
+        self.network = network
+        self.subnet = subnet
 
     def query(self, sql: str) -> str:
         """Run one statement; returns TSV text. Raises with the server message on error."""
@@ -70,8 +74,15 @@ def ch():
         pytest.skip(f"docker or image {IMAGE} not available")
     name = f"shopflow-sqltest-{uuid.uuid4().hex[:8]}"
     port = _free_port()
+    # Own network: a Spark container can reach the server by name (test_backfill.py).
+    subprocess.run(["docker", "network", "create", name], check=True, capture_output=True)
+    subnet = subprocess.run(
+        ["docker", "network", "inspect", name, "-f", "{{range .IPAM.Config}}{{.Subnet}}{{end}}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     subprocess.run(
-        ["docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{port}:8123",
+        ["docker", "run", "-d", "--name", name, "--network", name,
+         "-p", f"127.0.0.1:{port}:8123",
          "-e", f"CLICKHOUSE_USER={USER}", "-e", f"CLICKHOUSE_PASSWORD={PASSWORD}",
          "-e", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1",
          "-v", f"{CONFIG}:/etc/clickhouse-server/config.d/shopflow.xml:ro",
@@ -96,6 +107,7 @@ def ch():
         ddl_dir = os.environ.get("SHOPFLOW_DDL_DIR", "clickhouse/ddl")
         subprocess.run([str(ROOT / "scripts/apply-ddl.sh"), ddl_dir],
                        cwd=ROOT, env=env, check=True, capture_output=True)
-        yield ClickHouse(url)
+        yield ClickHouse(url, name, name, subnet)
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        subprocess.run(["docker", "network", "rm", name], capture_output=True)
