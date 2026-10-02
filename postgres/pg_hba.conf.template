@@ -1,0 +1,17 @@
+# pg_hba for the laptop Postgres (ADR-0010). Rendered at container start by postgres/entrypoint.sh:
+# @LAPTOP_COMPOSE_SUBNET@ and @PI5_HOST@ come from .env, IPs never land in git (ADR-0003).
+# TYPE  DATABASE  USER          ADDRESS                   METHOD
+
+# Unix socket inside the container: docker compose exec ... psql in scripts and init.
+local   all       all                                     trust
+
+# Compose network: Debezium, the generator and the host itself. Host connections to the
+# published 127.0.0.1:5432 arrive via docker-proxy from the network gateway, not from 127.0.0.1.
+host    all       all           @LAPTOP_COMPOSE_SUBNET@   scram-sha-256
+
+# The only LAN entry: reconciliation DAG on Pi5, read-only role (FR-8). DNAT keeps the source IP.
+host    @POSTGRES_DB@  recon_reader  @PI5_HOST@/32   scram-sha-256
+
+# Everything else, including the superuser from the LAN.
+host    all       all           0.0.0.0/0                 reject
+host    all       all           ::/0                      reject
