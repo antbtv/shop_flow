@@ -526,7 +526,7 @@
   - Риск: CPU Pi5 и время генерации.
   - Сделано (2026-10-02): `scripts/bench-marts.sh [orders]` — база `shopflow_bench` из тех же DDL (замена `shopflow.` → `shopflow_bench.`), синтетика через `INSERT ... SELECT FROM numbers()` (1 млн заказов за 14 дней, 3 млн позиций, 2,6 млн строк истории, 20 тыс. версий товаров, 150 тыс. версий клиентов), ручной refresh 4 MV, 3 полных прохода `fact_orders` и запрос дашборда, время и память из `system.query_log` и `system.view_refreshes`. Сухой прогон на временном ClickHouse поймал `INSERT` без списка колонок (порядок колонок после миграций 011–013 другой) → явные списки.
   - Приёмка пройдена (Pi5, загрузка 3 с, весь замер 13 с): refresh `mart_revenue_daily_mv` 1277 мс / 283 МиБ, `mart_funnel_daily_mv` 915 мс / 256 МиБ (лимит 768 МиБ, 37 %), `dim_customers_mv` 137 мс / 36 МиБ, `dim_products_mv` 28 мс / 10 МиБ (лимит 512 МиБ); исключений refresh нет; `fact_orders` полный проход 604–687 мс / 114–181 МиБ, запрос дашборда 449 мс / 91 МиБ. Порог перехода `fact_orders` на таблицу записан в ADR-0009: `stg_order_items` > ~6 млн строк или пик памяти refresh > 600 МиБ.
-  - Осталось: удалить базу `shopflow_bench` (делает пользователь: хук запрещает Claude деструктивный SQL). До удаления её 4 MV пересчитываются каждые 2 мин (~2,5 с CPU на цикл).
+  - База `shopflow_bench` удалена пользователем (хук запрещает Claude деструктивный SQL): в `system.databases` и `system.view_refreshes` её нет.
 - [ ] **4.17. Документация, ревью, закрытие** (~1 ч)
   - Runbook (Airflow, сверка, DQ, «ноутбук выключен»), PRD, ADR; `reviewer`, `dq-tester` (FR-8, FR-9); итоги в STATUS.
   - Приёмка: `ruff check .`, `sqlfluff lint clickhouse/ddl`, `python3 -m pytest -q` зелёные; замечания `reviewer` закрыты; `dq-tester` 0 нарушений.
