@@ -36,8 +36,10 @@ statements=(
     "GRANT INSERT ON shopflow.stg_product_versions TO spark_writer"
     "GRANT INSERT ON shopflow.stg_order_status_history TO spark_writer"
     "GRANT INSERT ON shopflow.stg_inventory TO spark_writer"
-    # The connector reads the table schema with SELECT and the cluster topology when the
-    # catalog loads (spike 2.4). system.tables/columns/databases are filtered by grants.
+    # The connector needs SELECT on every table it writes: loadTable queries all columns to read
+    # the schema (spike 2.4; rechecked in 4.4: INSERT alone gives ACCESS_DENIED on append), and
+    # the cluster topology when the catalog loads. system.tables/columns/databases are filtered
+    # by grants. Spark reads data only from raw_events (backfill, 3.8).
     "GRANT SELECT ON shopflow.raw_events TO spark_writer"
     "GRANT SELECT ON shopflow.stg_orders TO spark_writer"
     "GRANT SELECT ON shopflow.stg_order_items TO spark_writer"
@@ -89,7 +91,8 @@ fi
 for q in "${statements[@]}"; do
     # Print the first words only: the hashes stay out of terminal logs.
     label=$(cut -d' ' -f1-4 <<<"$q")
-    if out=$(ch_curl --data-binary "$q" "$CLICKHOUSE_URL/" 2>&1); then
+    # Query on stdin, not in argv: the hashes must not show up in ps.
+    if out=$(ch_curl --data-binary @- "$CLICKHOUSE_URL/" <<<"$q" 2>&1); then
         echo "ok: $label"
     else
         out=${out//$hash/<hash>}
