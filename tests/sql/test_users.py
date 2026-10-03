@@ -20,7 +20,9 @@ def create_users(ch, **extra):
     env = {**os.environ, "CLICKHOUSE_URL": ch.url, "CLICKHOUSE_USER": USER,
            "CLICKHOUSE_PASSWORD": PASSWORD, "CLICKHOUSE_SPARK_PASSWORD": "spark-test-only",
            "LAN_SUBNET": ch.subnet, "PI5_COMPOSE_SUBNET": ch.subnet,
-           "CLICKHOUSE_AIRFLOW_PASSWORD": "airflow-test-only", **extra}
+           "CLICKHOUSE_AIRFLOW_PASSWORD": "airflow-test-only",
+           # Never read the real .env: an empty value must mean "not set", not "take it from .env".
+           "ENV_FILE": "/nonexistent", **extra}
     return subprocess.run([str(ROOT / "scripts/create-ch-users.sh")], cwd=ROOT, env=env,
                           capture_output=True, text=True)
 
