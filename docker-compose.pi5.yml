@@ -155,8 +155,9 @@ services:
       <<: *airflow-env
       # One parsing process: with the default two the start peaked at 470 of 512 MiB (memory.peak,
       # 5.12; docker stats sampled every 5 s had missed it). Parsing five DAG files in turn is fast
-      # enough. New files are picked up every refresh_interval = 300 s.
-      AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: "1"
+      # enough. New files are picked up every refresh_interval = 300 s. The variable is for A/B
+      # measurements (scripts/pi5/start-peak.sh), not for .env.
+      AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: ${DAG_PROCESSOR_PARSING_PROCESSES:-1}
 
   # Dashboard (FR-10, ADR-0011). The plugin is baked into the image, nothing is downloaded at start.
   # No depends_on: Grafana comes up without ClickHouse and shows an error per panel instead.

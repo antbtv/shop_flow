@@ -62,3 +62,8 @@ def test_dag_processor_parses_with_one_process_and_keeps_the_common_airflow_sett
     assert env["PYTHONPATH"] == "/opt/airflow/dags"
     for name in ("airflow-scheduler", "airflow-api-server"):
         assert "AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES" not in services[name]["environment"]
+
+
+def test_parsing_processes_default_to_one_and_can_be_overridden_for_a_measurement(tmp_path):
+    assert resolved(tmp_path, {"DAG_PROCESSOR_PARSING_PROCESSES": "2"})["airflow-dag-processor"][
+        "environment"]["AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES"] == "2"
