@@ -85,7 +85,13 @@ for s in $SERVICES; do
     printf '%-22s max+%s oom_kill+%s swap_mib=%s\n' "$s" $(( $(events "$s" max) - max0[$s] )) \
         $(( $(events "$s" oom_kill) - oom0[$s] )) $(( $(cat "$(cg "$s")/memory.swap.current") / 1048576 ))
 done
-echo "== kernel oom:"; sudo -n dmesg 2>/dev/null | grep -iE 'oom|killed process' | tail -5 || echo "(dmesg needs sudo)"
+echo "== kernel oom:"
+if sudo -n true 2>/dev/null; then
+    # No lines below mean no OOM; "grep finds nothing" must not be reported as "no sudo".
+    sudo -n dmesg | grep -iE 'oom|killed process' | tail -5 || true
+else
+    echo "(dmesg needs passwordless sudo: read it by hand, not read here)"
+fi
 vcgencmd get_throttled 2>/dev/null || true; vcgencmd measure_temp 2>/dev/null || true
 echo "== tunnel: handshake age, s (needs sudo; empty = not readable)"
 sudo -n awg show awg0 latest-handshakes 2>/dev/null | awk -v now="$(date +%s)" '{print now - $2}' || true

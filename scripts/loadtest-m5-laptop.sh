@@ -34,7 +34,17 @@ GRAFANA_URL=${GRAFANA_URL:-http://$(env_value PI5_HOST):3000}
 [[ -n $GRAFANA_PASSWORD ]] || { echo "GRAFANA_ADMIN_PASSWORD is neither in the env file nor on Pi5 (ssh ${PI5_SSH:-pi5})" >&2; exit 2; }
 export GRAFANA_PASSWORD GRAFANA_URL
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+cleanup() {
+    # Ctrl-C or kill: the background viewers and the generator container must not run on
+    # to the end of the window.
+    # shellcheck disable=SC2086
+    [[ -n ${viewer_pids:-} ]] && kill $viewer_pids 2>/dev/null
+    [[ -n ${gen_pid:-} ]] && kill "$gen_pid" 2>/dev/null
+    docker ps -q --filter "name=${PROJECT}-generator-run" | xargs -r docker stop >/dev/null 2>&1
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+trap 'echo "interrupted"; exit 130' INT TERM
 
 cg() { echo "/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' "$PROJECT-$1-1").scope"; }
 events() { awk -v k="$2" '$1 == k {print $2}' "$(cg "$1")/memory.events"; }

@@ -64,9 +64,12 @@ def narrow(text: str) -> tuple[str, list[str]]:
             elif name == "Peer" and k in DROP_PEER:
                 notes.append(f"replaced {key}")
             elif k == "address":
-                if ipv4_only(value) != value:
+                given = [a.strip() for a in value.split(",") if a.strip()]
+                kept = ipv4_only(value)
+                # compared as lists: "a,b" without a space is not a change
+                if kept.split(", ") != given:
                     notes.append("Address: IPv6 removed")
-                out.append(f"{key} = {ipv4_only(value)}")
+                out.append(f"{key} = {kept}")
             else:
                 out.append(f"{key} = {value}")
         if name == "Interface":
@@ -86,9 +89,10 @@ def main() -> None:
     with open(sys.argv[1], encoding="utf-8") as handle:
         text, notes = narrow(handle.read())
     fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # An existing file keeps its old (maybe wider) mode: narrow it before any key is written.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
-    os.chmod(sys.argv[2], 0o600)
     print(f"wrote {sys.argv[2]} (mode 600)")
     for note in dict.fromkeys(notes):
         print(" -", note)

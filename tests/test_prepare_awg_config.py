@@ -100,3 +100,29 @@ def test_garbage_line_is_refused_without_echoing_it(tmp_path):
     done, _ = run(tmp_path, EXPORTED + "THIS-IS-SECRET-LOOKING-GARBAGE\n")
     assert done.returncode != 0
     assert "SECRET-LOOKING" not in done.stdout + done.stderr
+
+
+def test_an_existing_output_file_with_wide_permissions_is_narrowed(tmp_path):
+    src, out = tmp_path / "in.conf", tmp_path / "out.conf"
+    src.write_text(EXPORTED)
+    out.write_text("old content")
+    out.chmod(0o644)
+    done = subprocess.run([sys.executable, str(SCRIPT), str(src), str(out)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    assert "old content" not in out.read_text()
+
+
+def test_an_address_list_without_spaces_is_not_reported_as_changed(tmp_path):
+    done, out = run(tmp_path, EXPORTED.replace("Address = 10.8.1.7/32, fd58:baa6:dead::7/128",
+                                               "Address = 10.8.1.7/32,10.8.2.7/32"))
+    assert done.returncode == 0, done.stderr
+    assert "IPv6 removed" not in done.stdout
+    assert "Address = 10.8.1.7/32, 10.8.2.7/32" in out.read_text()
+
+
+def test_ipv6_in_the_address_is_reported_and_removed(tmp_path):
+    done, out = run(tmp_path, EXPORTED)
+    assert "Address: IPv6 removed" in done.stdout
+    assert "fd58" not in out.read_text()

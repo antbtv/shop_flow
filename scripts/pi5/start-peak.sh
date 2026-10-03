@@ -5,6 +5,9 @@
 #   ssh pi5 'bash -s -- airflow-dag-processor 90' < scripts/pi5/start-peak.sh
 #   ssh pi5 'DAG_PROCESSOR_PARSING_PROCESSES=2 bash -s -- airflow-dag-processor 90' < scripts/pi5/start-peak.sh
 # Same method for every variant: always `up -d --force-recreate --no-deps` (not `restart`).
+# The service stays in the variant that was measured last: after an A/B run recreate it with the
+# default (no variable set), e.g. `docker compose -f docker-compose.pi5.yml up -d --force-recreate
+# --no-deps SERVICE`. A failing `up` is not hidden: the script stops with docker's message.
 # Overrides (tests on a laptop stand): REPO_DIR, PROJECT, COMPOSE_EXTRA.
 set -euo pipefail
 export LC_ALL=C
@@ -15,7 +18,7 @@ PROJECT=${PROJECT:-shopflow}
 # shellcheck disable=SC2086
 C="docker compose -p $PROJECT -f docker-compose.pi5.yml ${COMPOSE_EXTRA:-}"
 
-$C up -d --force-recreate --no-deps "$service" >/dev/null 2>&1
+$C up -d --force-recreate --no-deps "$service" >/dev/null
 d=/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' "$PROJECT-$service-1").scope
 limit=$(( $(docker inspect -f '{{.HostConfig.Memory}}' "$PROJECT-$service-1") / 1048576 ))
 end=$((SECONDS + seconds))

@@ -201,6 +201,10 @@ MARTS = ("mart_revenue_daily", "mart_funnel_daily", "mart_cohort_retention",
 SCHEDULED_DAGS = ("shopflow_reconciliation", "shopflow_data_quality", "shopflow_retention")
 # Marts refresh every 2 minutes (ADR-0009): late by 4 min is a stuck chain, by 10 min a dead one.
 REFRESH_LIMITS = thresholds(("green", None), ("orange", 240), ("red", 600))
+# last_success_time of mart_pipeline_health_mv itself is that of its previous refresh (the row is
+# written during the refresh), so its age reaches ~240 s at the end of every cycle without any
+# fault: the table of MVs turns orange later than the other panels (5.14 review).
+MV_SUCCESS_LIMITS = thresholds(("green", None), ("orange", 300), ("red", 600))
 # A scheduled DAG runs daily: more than 26 hours without a run is a missed day (ADR-0011).
 AGE_HOURS_LIMITS = thresholds(("green", None), ("red", 26))
 # The alert channel is probed every 3 hours (ADR-0012): one missed probe is orange, two are red.
@@ -308,7 +312,7 @@ def rows_5_8() -> list[dict]:
               f"dateDiff('second', last_success_time, now('UTC')) AS `давность, с`, "
               f"ifNull(last_error, '') AS `ошибка` FROM {HEALTH} WHERE kind = 'view' "
               f"ORDER BY name",
-              overrides=[colored("давность, с", REFRESH_LIMITS, "s"), error_cells("ошибка")]),
+              overrides=[colored("давность, с", MV_SUCCESS_LIMITS, "s"), error_cells("ошибка")]),
         table(28, "Возраст последнего планового запуска, ч", 0, 75, 8, 6,
               f"WITH ages AS (SELECT toString(dag_id) AS dag_id, "
               f"dateDiff('hour', max(checked_at), now('UTC')) AS age_h FROM {DQ} FINAL "

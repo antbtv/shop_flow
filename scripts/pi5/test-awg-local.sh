@@ -15,9 +15,13 @@ check() {  # description, command...
     local what=$1; shift
     if "$@" >/dev/null 2>&1; then echo "ok    $what"; else echo "FAIL  $what"; fails=$((fails + 1)); fi
 }
-cleanup() { docker rm -f "$SRV" "$CLI" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1; }
+# Throwaway keys of the test: a private directory, not fixed names in /tmp with the default umask.
+KEYS=$(mktemp -d)
+chmod 700 "$KEYS"
+reset_docker() { docker rm -f "$SRV" "$CLI" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1; }
+cleanup() { reset_docker; rm -f "$KEYS"/*.conf; rmdir "$KEYS" 2>/dev/null; }
 [[ ${KEEP:-0} == 1 ]] || trap cleanup EXIT
-cleanup
+reset_docker
 
 docker build -q -t awgtest-base - >/dev/null <<'DOCKERFILE'
 FROM debian:trixie-slim
@@ -43,9 +47,9 @@ srv_ip=$(docker inspect "$SRV" --format "{{(index .NetworkSettings.Networks \"$N
 params="Jc = 5\nJmin = 10\nJmax = 50\nS1 = 66\nS2 = 77\nH1 = 1234567891\nH2 = 1234567892\nH3 = 1234567893\nH4 = 1234567894"
 
 printf "[Interface]\nAddress = 10.9.0.1/24\nPrivateKey = %s\nListenPort = 51820\n$params\n\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.9.0.2/32\n" \
-    "$srv_priv" "$cli_pub" "$psk" > /tmp/awgtest-srv.conf
+    "$srv_priv" "$cli_pub" "$psk" > "$KEYS/srv.conf"
 # client: the template with its <placeholders> filled in
-python3 - "$TEMPLATE" "$cli_priv" "$srv_pub" "$psk" "$srv_ip" >/tmp/awgtest-cli.conf <<'PY'
+python3 - "$TEMPLATE" "$cli_priv" "$srv_pub" "$psk" "$srv_ip" >"$KEYS/cli.conf" <<'PY'
 import re, sys
 text, priv, pub, psk, ip = open(sys.argv[1]).read(), *sys.argv[2:6]
 text = text.replace("<PrivateKey of this device>", priv).replace("<PublicKey of the server>", pub)
@@ -59,10 +63,10 @@ assert "<" not in text.replace("<PRIVATE", ""), "unfilled placeholder in the tem
 sys.stdout.write(text)
 PY
 for c in $SRV $CLI; do x $c "mkdir -p /etc/amnezia/amneziawg && chmod 700 /etc/amnezia/amneziawg"; done
-docker cp /tmp/awgtest-srv.conf $SRV:/etc/amnezia/amneziawg/awg0.conf
-docker cp /tmp/awgtest-cli.conf $CLI:/etc/amnezia/amneziawg/awg0.conf
+docker cp "$KEYS/srv.conf" $SRV:/etc/amnezia/amneziawg/awg0.conf
+docker cp "$KEYS/cli.conf" $CLI:/etc/amnezia/amneziawg/awg0.conf
 x $SRV "chmod 600 /etc/amnezia/amneziawg/awg0.conf"; x $CLI "chmod 600 /etc/amnezia/amneziawg/awg0.conf"
-rm -f /tmp/awgtest-srv.conf /tmp/awgtest-cli.conf
+rm -f "$KEYS/srv.conf" "$KEYS/cli.conf"
 
 # the "Telegram" side
 x $SRV "ip addr add 149.154.166.110/32 dev lo"
@@ -85,9 +89,10 @@ check "resolv.conf unchanged (no DNS= taken over)" bash -c "[[ \"\$(docker exec 
 check "tunnel MTU is 1280" x $CLI "ip link show awg0 | grep -q 'mtu 1280'"
 check "TCPMSS clamp rule is installed" x $CLI "iptables -t mangle -S FORWARD | grep -q TCPMSS"
 check "HTTP to 'Telegram' works through the tunnel" x $CLI "test \"\$(curl -sS -m 10 -o /dev/null -w '%{http_code}' http://149.154.166.110/)\" = 200"
-check "handshake happened" x $CLI "/opt/awg/awg show awg0 latest-handshakes | awk '{exit !(\$2 > 0)}'"
-check "no IPv6 or default route in AllowedIPs of the config" bash -c "! docker exec $CLI grep -E '^AllowedIPs' /etc/amnezia/amneziawg/awg0.conf | grep -E '0\.0\.0\.0/0|::'"
-check "no DNS line in the config" bash -c "! docker exec $CLI grep -qi '^DNS' /etc/amnezia/amneziawg/awg0.conf"
+# awk must have seen a line: on empty input (no interface) a bare `{exit ...}` action never runs and exits 0
+check "handshake happened" x $CLI "/opt/awg/awg show awg0 latest-handshakes | awk '{ok = (\$2 > 0)} END{exit !ok}'"
+check "config has AllowedIPs, none of them IPv6 or the default route" x $CLI "grep -q '^AllowedIPs' /etc/amnezia/amneziawg/awg0.conf && ! grep '^AllowedIPs' /etc/amnezia/amneziawg/awg0.conf | grep -qE '0\.0\.0\.0/0|::'"
+check "config exists and has no DNS line" x $CLI "test -f /etc/amnezia/amneziawg/awg0.conf && ! grep -qi '^DNS' /etc/amnezia/amneziawg/awg0.conf"
 
 check "client tunnel goes down" x $CLI "/opt/awg/awg-quick down awg0"
 check "after down: the route is gone" bash -c "! docker exec $CLI ip route get 149.154.166.110 | grep -q awg0"
