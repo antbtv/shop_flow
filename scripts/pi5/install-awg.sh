@@ -44,7 +44,8 @@ import ipaddress, re, sys
 path, allowed = sys.argv[1], {ipaddress.ip_network(n) for n in sys.argv[2:]}
 bad = []
 text = open(path).read()
-if "<" in text:
+# AmneziaWG 2.0 signature parameters I1..I5 legitimately hold <b 0x..>, <r 16>, <t>: not placeholders.
+if any("<" in line for line in text.splitlines() if not re.match(r"\s*I[1-5]\s*=", line)):
     bad.append("an unfilled <placeholder>")
 if re.search(r"^\s*DNS\s*=", text, flags=re.M | re.I):
     bad.append("a DNS= line (it would take over the DNS of the host and of Docker)")

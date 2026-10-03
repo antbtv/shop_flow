@@ -6,6 +6,7 @@
   - **Доставка файлов.** Через `rsync` в `~/shopflow` на Pi5 по явному списку путей: `docker-compose.pi5.yml`, `clickhouse/`, с M4 `airflow/` (образ собирается на Pi5, ADR-0010), с M5 `grafana/` и `dashboards/` (ADR-0011).
     - Исключения: `--exclude='.env' --exclude='.git' --exclude='.venv'`.
     - `--delete` допустим только внутри `clickhouse/`, `airflow/`, `grafana/` и `dashboards/`, но не на корне `~/shopflow`.
+    - Секреты хоста вне `~/shopflow` (ADR-0012): конфиг туннеля `/etc/amnezia/amneziawg/awg0.conf` (`root:root 600`) и бинарники AmneziaWG (`/usr/local/bin`) ставит `scripts/pi5/install-awg.sh` из `~/awg-stage`; через `rsync` списка выше они не идут, в git только шаблон.
     - Источник истины — git на ноутбуке, на Pi5 файлы не правятся.
     - `config.d/*.xml` с режимом 644: их читает пользователь контейнера (uid 101).
   - **Секреты.** На Pi5 отдельный `~/shopflow/.env` (`chmod 600`) только с переменными Pi5: `PI5_HOST`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` (в M4 добавятся переменные Airflow). Ноутбучные секреты (Postgres, Debezium) на Pi5 не попадают. Исключение с M4: пароль роли только для чтения `recon_reader` для сверки, см. ADR-0010. При смене IP Pi5 правятся оба `.env`.

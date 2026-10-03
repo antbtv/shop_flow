@@ -141,6 +141,14 @@ def test_a_config_that_is_not_narrow_is_refused(box, change, reason):
         assert secret not in done.stdout + done.stderr
 
 
+def test_awg2_signature_parameters_with_angle_brackets_are_not_placeholders(box):
+    config = CONFIG.replace("H1 = 1234567891", "H1 = 1234567891\nI1 = <b 0xc7000000><r 16><t>")
+    box.stage.joinpath("awg0.conf").write_text(config)
+    done = box()
+    assert done.returncode == 0, done.stderr
+    assert "I1 = <b 0xc7000000><r 16><t>" in (box.tmp / "conf" / "awg0.conf").read_text()
+
+
 def test_without_any_config_it_stops(box):
     (box.stage / "awg0.conf").unlink()
     assert box().returncode != 0

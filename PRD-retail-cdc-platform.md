@@ -221,6 +221,7 @@ flowchart LR
 - Pi5 получает статический IP (или DHCP-резервацию) в домашней сети.
 - Открытые порты на Pi5: ClickHouse HTTP (8123), ClickHouse native (9000), Airflow webserver (8080), Grafana (3000, M5).
 - Аутентификация — базовая (домашняя сеть, наружу не пробрасывается); порты наружу не открывать.
+- Исходящий канал (FR-11): сеть Pi5 блокирует Telegram, Bot API доступен через хостовый туннель AmneziaWG только к подсетям Telegram (default route и DNS не меняются, вход через туннель закрыт в `DOCKER-USER`), доступность проверяет плановая проба. См. `docs/adr/0012-pi5-telegram-tunnel.md`.
 - Ноутбук (с Milestone 4, FR-8): Postgres (5432) на LAN-адресе ноутбука, `pg_hba` пускает из LAN только роль `recon_reader` (только SELECT) с IP Pi5. См. `docs/adr/0010-airflow-pi5-postgres-access.md`.
 
 ### 6.2 Топики брокера сообщений
