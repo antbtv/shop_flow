@@ -86,7 +86,9 @@ def walk(node, path: str, report: list[str], seen: set) -> None:
             report.append(f"{path}: WireGuard-style config")
             report.extend("    " + line for line in describe_config(node))
         elif path.rsplit(".", 1)[-1] in ("container", "protocol", "defaultContainer", "type",
-                                         "description", "name") and len(node) < 60:
+                                         "description", "name", "service_type",
+                                         "service_protocol", "user_country_code") \
+                and len(node) < 60:
             report.append(f"{path} = {node}")
         elif path not in seen:
             seen.add(path)

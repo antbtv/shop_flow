@@ -53,12 +53,13 @@ def test_shows_protocol_obfuscation_and_routes_but_no_secret(tmp_path):
 
 
 def test_key_without_qt_length_prefix_and_without_config_is_still_safe(tmp_path):
-    key = make_key({"api_config": {"service_type": "amnezia-premium", "token": SECRETS[4]}},
-                   qt_prefix=False)
+    key = make_key({"api_config": {"service_type": "amnezia-premium", "service_protocol": "awg",
+                                   "token": SECRETS[4]}}, qt_prefix=False)
     done = inspect(tmp_path, key)
     assert done.returncode == 0, done.stderr
     assert SECRETS[4] not in done.stdout
     assert "api_config.token: string" in done.stdout
+    assert "api_config.service_protocol = awg" in done.stdout
 
 
 def test_garbage_is_refused_without_echoing_it(tmp_path):
