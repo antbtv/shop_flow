@@ -77,7 +77,8 @@ viewer() {  # n: one browser tab with auto-refresh
         [ $((PERIOD - (t1 - t0))) -gt 0 ] && sleep $((PERIOD - (t1 - t0)))
     done
 }
-for n in $(seq "$VIEWERS"); do viewer "$n" & done
+viewer_pids=""
+for n in $(seq "$VIEWERS"); do viewer "$n" & viewer_pids="$viewer_pids $!"; done
 
 min_avail=999999; max_swap=0
 while [ $SECONDS -lt $end ]; do
@@ -91,8 +92,14 @@ while [ $SECONDS -lt $end ]; do
     if [ $retriggered = 0 ] && [ $SECONDS -ge $half ]; then trigger_dags; retriggered=1; fi
     sleep $SAMPLE_SEC
 done
-wait
-[[ -n ${gen_pid:-} ]] && { wait "$gen_pid"; echo "generator exit code: $?"; }
+# Viewers and the generator are waited for one by one: a bare `wait` would reap the generator and
+# the later `wait $gen_pid` would answer 127 ("not a child") instead of its exit code.
+# shellcheck disable=SC2086
+wait $viewer_pids
+if [[ -n ${gen_pid:-} ]]; then
+    wait "$gen_pid"; gen_rc=$?
+    echo "generator exit code: $gen_rc"
+fi
 
 echo "== $START .. $(date -u +%T) UTC. Peak memory of laptop containers, MiB (limit):"
 for s in $SERVICES; do
