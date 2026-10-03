@@ -52,3 +52,13 @@ def test_telegram_settings_reach_only_the_scheduler(tmp_path):
 def test_without_telegram_variables_the_stack_still_resolves(tmp_path):
     env = resolved(tmp_path, {})["airflow-scheduler"]["environment"]
     assert env["TELEGRAM_BOT_TOKEN"] == "" and env["TELEGRAM_CHAT_ID"] == ""
+
+
+def test_dag_processor_parses_with_one_process_and_keeps_the_common_airflow_settings(tmp_path):
+    services = resolved(tmp_path, {})
+    env = services["airflow-dag-processor"]["environment"]
+    assert env["AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES"] == "1"
+    assert env["AIRFLOW__CORE__EXECUTOR"] == "LocalExecutor"  # the shared anchor is still merged
+    assert env["PYTHONPATH"] == "/opt/airflow/dags"
+    for name in ("airflow-scheduler", "airflow-api-server"):
+        assert "AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES" not in services[name]["environment"]
