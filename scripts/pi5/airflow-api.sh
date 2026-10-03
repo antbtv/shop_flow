@@ -8,6 +8,7 @@
 # 1800 s) for the run to finish and prints the task states. SKIP_WAIT=1 (test of "laptop off")
 # turns wait_for_postgres to skipped as soon as it is waiting. key=value arguments after the DAG id
 # are the run conf:  ssh pi5 'bash -s -- trigger shopflow_data_quality simulate_violation=true' < ...
+# WAIT_S=0 does not wait for the run: ssh pi5 'WAIT_S=0 bash -s -- trigger shopflow_alert_channel' < ...
 set -euo pipefail
 cd ~/shopflow
 env_value() { sed -n "s/^$1=//p" .env | tail -n 1 | tr -d '\r'; }
@@ -65,6 +66,7 @@ print(json.dumps({"logical_date": None, "conf": conf}))' "${@:3}")
             echo "wait_for_postgres -> skipped"
         fi
     fi
+    state=queued    # WAIT_S=0: return right after the trigger (load tests)
     for _ in $(seq $(( ${WAIT_S:-1800} / 15 ))); do
         state=$(call GET "/dags/$dag/dagRuns/$run" \
             | python3 -c 'import json, sys; print(json.load(sys.stdin)["state"])')

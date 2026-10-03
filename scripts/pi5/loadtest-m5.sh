@@ -4,7 +4,11 @@
 # (NFR-7, NFR-3, ADR-0004). Runs ON Pi5; start it from the laptop together with
 # scripts/loadtest-m5-laptop.sh (generator, viewers, laptop memory):
 #   ssh pi5 'bash -s' < scripts/pi5/loadtest-m5.sh
-# Triggers the four DAGs at the start and at DURATION/2, samples `docker stats` and the host every
+# TRIGGER=none (default): the laptop script starts the DAGs through the REST API from outside the
+# containers, as a person or the schedule would. TRIGGER=cli: `airflow dags trigger` inside the
+# scheduler container at the start and at DURATION/2 (as in M4; the CLI runs in the scheduler's
+# cgroup and adds ~300 MB to its peak: in run 1 of 5.12 the scheduler reached its limit that way).
+# Samples `docker stats` and the host every
 # 5 s, ClickHouse refresh state every 30 s, then prints peaks, memory.events deltas, swap, OOM,
 # the RSS of amneziawg-go (a host process, outside the cgroups), delay of raw_events, refresh and
 # grafana_reader query statistics from system.query_log, and DAG runs. No secret is printed.
@@ -26,7 +30,9 @@ cg() { echo "/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' "$
 events() { awk -v k="$2" '$1 == k {print $2}' "$(cg "$1")/memory.events"; }
 # The client takes user and password from the container's own environment: not in argv.
 ch() { $C exec -T clickhouse clickhouse-client -q "$1" </dev/null; }
+TRIGGER=${TRIGGER:-none}
 trigger_all() {
+    [ "$TRIGGER" = cli ] || return 0
     for d in $DAGS; do
         $C exec -T airflow-scheduler airflow dags trigger "$d" </dev/null >/dev/null 2>&1 || echo "  could not trigger $d"
     done
@@ -67,6 +73,10 @@ END_UTC=$(date -u +'%Y-%m-%d %H:%M:%S')
 echo "== peak memory, MiB (limit):"
 for s in $SERVICES; do
     printf '%-22s %5s  (%s)\n' "$s" "${peak[$s]:-?}" "$(docker inspect -f '{{.HostConfig.Memory}}' "$PROJECT-$s-1" | awk '{printf "%dm", $1/1048576}')"
+done
+echo "cgroup memory.peak since the container started, MiB (restart the service before the run for a clean value):"
+for s in $SERVICES; do
+    printf '%-22s %5s\n' "$s" $(( $(cat "$(cg "$s")/memory.peak") / 1048576 ))
 done
 echo "amneziawg-go (host process, outside cgroups): peak RSS ${awg_peak} MiB"
 echo "== host: min available ${min_avail} MiB, max swap used ${max_swap} MiB, max load1 ${max_load}"

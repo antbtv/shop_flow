@@ -20,6 +20,7 @@ PERIOD=30 # Grafana auto-refresh of the dashboard
 SAMPLE_SEC=5
 PROJECT=${COMPOSE_PROJECT:-shopflow}
 SERVICES="spark kafka connect postgres"
+DAGS="shopflow_reconciliation shopflow_data_quality shopflow_retention shopflow_alert_channel"
 
 env_value() { local file=${ENV_FILE:-.env}; [[ -f $file ]] && sed -n "s/^$1=//p" "$file" | tail -n 1 | tr -d '\r'; }
 # The admin password is generated on Pi5 (add-grafana-secrets.sh): the laptop's .env may lack it,
@@ -39,6 +40,16 @@ cg() { echo "/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' "$
 events() { awk -v k="$2" '$1 == k {print $2}' "$(cg "$1")/memory.events"; }
 restarts() { docker inspect -f '{{.RestartCount}}' "$PROJECT-$1-1"; }
 
+# The DAGs are started through Airflow's REST API on Pi5 (scripts/pi5/airflow-api.sh over ssh, no
+# waiting): from outside the containers, as a person would, not by the CLI inside the scheduler.
+trigger_dags() {
+    for d in $DAGS; do
+        ssh -o BatchMode=yes "${PI5_SSH:-pi5}" "WAIT_S=0 bash -s -- trigger $d" <scripts/pi5/airflow-api.sh \
+            >/dev/null 2>&1 || echo "  could not trigger $d"
+    done
+    echo "$(date -u +%T) UTC triggered through the API: $DAGS"
+}
+
 declare -A max0 oom0 rst0 peak
 for s in $SERVICES; do max0[$s]=$(events "$s" max); oom0[$s]=$(events "$s" oom_kill); rst0[$s]=$(restarts "$s"); done
 START=$(date -u +%T)
@@ -52,6 +63,8 @@ if [[ ${NO_GENERATOR:-0} != 1 ]]; then
 fi
 
 end=$((SECONDS + DURATION_SEC))
+half=$((SECONDS + DURATION_SEC / 2)); retriggered=0
+trigger_dags
 viewer() {  # n: one browser tab with auto-refresh
     local n=$1 t0 t1
     sleep $(( (n - 1) * PERIOD / VIEWERS ))
@@ -75,6 +88,7 @@ while [ $SECONDS -lt $end ]; do
     read -r avail swap < <(free -m | awk '/^Mem/{a=$7} /^Swap/{s=$3} END{print a, s}')
     [ "$avail" -lt "$min_avail" ] && min_avail=$avail
     [ "$swap" -gt "$max_swap" ] && max_swap=$swap
+    if [ $retriggered = 0 ] && [ $SECONDS -ge $half ]; then trigger_dags; retriggered=1; fi
     sleep $SAMPLE_SEC
 done
 wait
