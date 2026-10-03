@@ -91,6 +91,26 @@ scripts/ch-query.sh 'SELECT name, engine FROM system.tables WHERE database = cur
 
 Свежие данные в Replacing-таблицах читать через `FINAL` (или `argMax`), `FINAL` по `raw_events` только с фильтром по `event_time` (ADR-0004, CPU Pi5).
 
+### Grafana на Pi5 (M5, ADR-0011)
+
+Дашборд читает только витрины под пользователем `grafana_reader`. UI: `http://$PI5_HOST:3000`, пользователь `admin`, пароль `GRAFANA_ADMIN_PASSWORD` в `~/shopflow/.env` на Pi5 (действует только при первом создании базы Grafana; смена: `docker compose exec grafana grafana cli admin reset-admin-password <новый>`).
+
+```bash
+scripts/pi5/add-grafana-secrets.sh        # секреты в оба .env, значения не печатаются, повтор безопасен
+rsync -av --chmod=D755,F644 docker-compose.pi5.yml infra/pi5/pi5.env.example pi5:shopflow/
+rsync -av --delete --chmod=D755,F644 clickhouse/ pi5:shopflow/clickhouse/
+rsync -av --delete --chmod=D755,F644 grafana/ pi5:shopflow/grafana/
+rsync -av --delete --chmod=D755,F644 dashboards/ pi5:shopflow/dashboards/
+scripts/apply-ddl.sh                      # витрины M5 (022-029)
+scripts/create-ch-users.sh                # создаёт grafana_reader (повторный запуск безопасен)
+ssh pi5 'cd ~/shopflow && docker compose -f docker-compose.pi5.yml build grafana && docker compose -f docker-compose.pi5.yml up -d --wait grafana'
+ssh pi5 'bash -s' < scripts/pi5/grafana-smoke.sh
+```
+
+`up -d grafana` другие сервисы не трогает. Новых правил файрвола не нужно: `DOCKER-USER` не зависит от порта (ADR-0003), порт 3000 публикуется только на `$PI5_HOST`. Образ собирается на Pi5 и скачивает плагин (закреплены версия и sha256, ADR-0011); после сборки интернет Grafana не нужен. Обновление Grafana или плагина — новые версия и sha256 в `grafana/Dockerfile`, повтор `build grafana` и `up -d grafana`.
+
+Если панели показывают `SETTING_CONSTRAINT_VIOLATION`: `queryTimeout` и `dialTimeout` источника должны быть минимум на 5 с ниже `max_execution_time` профиля `grafana_reader` (30 с): драйвер плагина прибавляет к ним ~5 с.
+
 `scripts/load_sample_events.sh` (M1, одноразовый) копирует события из Kafka в `raw_events`; повторный запуск безопасен, дубли схлопываются.
 
 ## 6. Spark: Kafka → ClickHouse
