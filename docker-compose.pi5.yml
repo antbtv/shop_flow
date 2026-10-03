@@ -131,6 +131,11 @@ services:
         "password": "${RECON_READER_PASSWORD:?set RECON_READER_PASSWORD}",
         "extra": {"connect_timeout": "10", "keepalives": "1", "keepalives_idle": "30",
         "keepalives_interval": "10", "keepalives_count": "3"}}
+      # Failure alerts (FR-11, ADR-0011): only the scheduler, where the task callbacks run. Empty
+      # means "no alert is sent, a warning goes to the task log". TELEGRAM_API_URL is for tests.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_API_URL: ${TELEGRAM_API_URL:-https://api.telegram.org}
     # Let running tasks finish their ClickHouse insert before SIGKILL.
     stop_grace_period: 60s
     healthcheck:
