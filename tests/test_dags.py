@@ -18,6 +18,7 @@ EXPECTED_DAGS = {
     "shopflow_reconciliation",
     "shopflow_data_quality",
     "shopflow_retention",
+    "shopflow_alert_channel",
 }
 
 # PYTHONPATH as in docker-compose.pi5.yml: DAG files import shopflow_common;
@@ -77,5 +78,7 @@ def test_failure_callbacks_follow_adr_0011(dagbag):
     }
     assert callbacks["shopflow_data_quality"] == {"run_checks": ["alert_failure"]}
     assert callbacks["shopflow_retention"] == {"retention": ["alert_failure"]}
+    # The probe must not try to alert through the channel it checks.
+    assert callbacks["shopflow_alert_channel"] == {"probe_channel": ["log_failure"]}
     assert callbacks["shopflow_healthcheck"] == {
         "check_clickhouse": ["log_failure"], "check_postgres": ["log_failure"]}

@@ -1728,6 +1728,74 @@
       ],
       "title": "Размеры таблиц (по данным ретеншн-DAG)",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Плановая проба shopflow_alert_channel раз в 3 часа: GET без токена на Bot API из контейнера scheduler. Красный — алерты в Telegram не доходят (туннель, ADR-0012), хотя DAG-и зелёные; 99999 — проверок ещё не было.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 7
+              }
+            ]
+          },
+          "unit": "h"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 93
+      },
+      "id": 32,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT if(countIf(status = 'ok') = 0, 99999, dateDiff('hour', maxIf(checked_at, status = 'ok'), now('UTC'))) AS age_h FROM shopflow.dq_check_results FINAL WHERE check_name = 'telegram_reachable' AND table_name = ''",
+          "refId": "A"
+        }
+      ],
+      "title": "Канал алертов: часов с последней успешной проверки Telegram",
+      "type": "stat"
     }
   ],
   "refresh": "1m",

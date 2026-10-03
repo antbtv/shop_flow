@@ -203,6 +203,8 @@ SCHEDULED_DAGS = ("shopflow_reconciliation", "shopflow_data_quality", "shopflow_
 REFRESH_LIMITS = thresholds(("green", None), ("orange", 240), ("red", 600))
 # A scheduled DAG runs daily: more than 26 hours without a run is a missed day (ADR-0011).
 AGE_HOURS_LIMITS = thresholds(("green", None), ("red", 26))
+# The alert channel is probed every 3 hours (ADR-0012): one missed probe is orange, two are red.
+CHANNEL_AGE_LIMITS = thresholds(("green", None), ("orange", 5), ("red", 7))
 LOW_STOCK_LIMITS = thresholds(("green", None), ("orange", 1))
 # stg_order_items beyond ~4.5M rows: fact_orders moves to a table (ADR-0009, ADR-0011).
 ITEMS_LIMITS = thresholds(("green", None), ("orange", 3_500_000), ("red", 4_500_000))
@@ -343,6 +345,15 @@ def rows_5_8() -> list[dict]:
               f"FROM {DQ} FINAL WHERE check_name = 'table_size') ORDER BY `на диске` DESC",
               overrides=[override("на диске", ("unit", "bytes"))],
               description="Тренд диска и порог ADR-0009; пишет shopflow_retention."),
+        stat(32, "Канал алертов: часов с последней успешной проверки Telegram", 0, 93,
+             f"SELECT if(countIf(status = 'ok') = 0, 99999, "
+             f"dateDiff('hour', maxIf(checked_at, status = 'ok'), now('UTC'))) AS age_h "
+             f"FROM {DQ} FINAL WHERE check_name = 'telegram_reachable' AND table_name = ''",
+             unit="h", limits=CHANNEL_AGE_LIMITS, w=8,
+             description="Плановая проба shopflow_alert_channel раз в 3 часа: GET без токена на "
+                         "Bot API из контейнера scheduler. Красный — алерты в Telegram не "
+                         "доходят (туннель, ADR-0012), хотя DAG-и зелёные; 99999 — проверок "
+                         "ещё не было."),
     ]
 
 
