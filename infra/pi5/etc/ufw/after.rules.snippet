@@ -2,9 +2,12 @@
 # Docker publishes ports via DNAT + FORWARD, so ufw INPUT rules do not apply to containers.
 # DOCKER-USER is evaluated before Docker's own rules: drop new connections to containers
 # that arrive on wlan0 from outside the LAN. <LAN_CIDR> e.g. 192.168.0.0/24.
+# awg0 (ADR-0012) is the tunnel to Telegram: nothing may open a NEW connection to a container
+# through it, or whoever controls the VPN server could reach 8123, 9000, 8080 and 3000.
 *filter
 :DOCKER-USER - [0:0]
 -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -i awg0 -m conntrack --ctstate NEW -j DROP
 -A DOCKER-USER -i wlan0 ! -s <LAN_CIDR> -j DROP
 -A DOCKER-USER -j RETURN
 COMMIT
