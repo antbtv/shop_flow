@@ -94,6 +94,21 @@ def test_daily_marts_are_filtered_by_the_dashboard_time_range(path):
     for panel in panels(dash):
         for target in panel.get("targets", []):
             sql = target["rawSql"]
+            if "max(refreshed_at)" in sql:
+                continue  # a freshness probe looks at the newest refresh, not at a period
             if re.search(r"mart_(revenue|funnel|top_products)_daily", sql):
-                assert "$__dateFilter(order_date)" in sql, (
-                    f"panel {panel['id']} ignores the time range")
+                # The picker range, or an explicit fixed window (top products: 7 and 30 days).
+                assert ("$__dateFilter(order_date)" in sql
+                        or "order_date >= toDate(now('UTC'))" in sql), (
+                    f"panel {panel['id']} has no time window")
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.name)
+def test_dq_results_are_always_read_with_final(path):
+    # ReplacingMergeTree(checked_at): without FINAL a rewritten row shows twice.
+    dash = json.loads(path.read_text())
+    for panel in panels(dash):
+        for target in panel.get("targets", []):
+            sql = target["rawSql"]
+            for use in re.finditer(r"shopflow\.dq_check_results\b(?: AS \w+)?( FINAL)?", sql):
+                assert use.group(1), f"panel {panel['id']} reads dq_check_results without FINAL"
