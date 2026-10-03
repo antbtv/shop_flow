@@ -48,6 +48,10 @@
     - Алертят: `violation`, `lagging`, `error`, второй подряд `source_unavailable`, провал DQ и ретеншна. Не алертят: первый `source_unavailable` и `skipped` сенсор (`soft_fail`, callback не вызывается).
     - Текст: DAG, задача, `run_id`, статус, ссылка на UI (`AIRFLOW__API__BASE_URL`), не более 3 ключей-примеров, без паролей и строк подключения. Источник статуса и `details`: callback читает `dq_check_results FINAL` по `run_id`, при недоступном ClickHouse — откат на текст исключения. `report` явно проверяет состояния всех upstream-задач: любое `failed` даёт `error` (сейчас инвариант держится косвенно через XCom, добавляется тест).
     - Callback не пробрасывает исключения: сбой Telegram пишется в лог на уровне ERROR, состояние задачи не меняется.
+    - **Проверено на стенде (Airflow 3.1.0, LocalExecutor, 5.10), где какой callback выполняется:**
+      - исключение из кода задачи (`simulate_violation`): callback в процессе задачи (scheduler), сообщение уходит, токен ни в одном логе;
+      - `kill -9` процесса задачи (supervisor пишет `exit_code=SIGKILL final_state=failed`): задача и запуск `failed`, **callback не выполняется нигде** (ни в задаче, ни в scheduler, ни в dag-processor), сообщения нет. Это строже, чем предполагал ADR: компенсация только панелью «возраст последнего планового запуска» (запись в `dq_check_results` не появится);
+      - гибель supervisor (heartbeat timeout, на стенде 30 с): scheduler помечает задачу `failed`, callback выполняется в **dag-processor**, без токена и без соединения `shopflow_clickhouse` (`lookup_run` падает, откат на текст), `Telegram alert skipped` в логе, ничего не падает; callback пришёл дважды подряд (два запроса) — безвредно, пока у dag-processor нет токена, и ещё одна причина его не давать.
 - **Рассмотренные варианты:**
   - Superset на ноутбуке: FR-10 пропадает при выключенном ноутбуке, ≥ 1 ГБ на ноутбуке с запасом Spark ~12 %.
   - Grafana читает `fact_orders` и `stg_*` напрямую: гранты на базовые таблицы, тяжёлые запросы на каждое обновление панели. Отклонено.
