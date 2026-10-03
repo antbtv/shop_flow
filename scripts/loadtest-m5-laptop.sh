@@ -7,7 +7,7 @@
 # browser with auto-refresh does), VIEWERS of them, staggered. Prints peaks of spark, kafka, connect,
 # postgres against their limits, memory.events deltas, restarts, and what the viewers saw.
 # The Grafana password is read from .env (key GRAFANA_ADMIN_PASSWORD) and never printed.
-# Overrides: DURATION_SEC, RATE, SEED, VIEWERS, ENV_FILE, GRAFANA_URL, GRAFANA_PASSWORD,
+# Overrides: DURATION_SEC, RATE, SEED, VIEWERS, ENV_FILE, PI5_SSH, GRAFANA_URL, GRAFANA_PASSWORD,
 # NO_GENERATOR=1 (tests), COMPOSE_PROJECT.
 set -uo pipefail
 export LC_ALL=C
@@ -22,9 +22,15 @@ PROJECT=${COMPOSE_PROJECT:-shopflow}
 SERVICES="spark kafka connect postgres"
 
 env_value() { local file=${ENV_FILE:-.env}; [[ -f $file ]] && sed -n "s/^$1=//p" "$file" | tail -n 1 | tr -d '\r'; }
+# The admin password is generated on Pi5 (add-grafana-secrets.sh): the laptop's .env may lack it,
+# then it is read from ~/shopflow/.env on Pi5 over ssh (PI5_SSH, default alias pi5), never printed.
 GRAFANA_PASSWORD=${GRAFANA_PASSWORD:-$(env_value GRAFANA_ADMIN_PASSWORD)}
+if [[ -z $GRAFANA_PASSWORD ]]; then
+    GRAFANA_PASSWORD=$(ssh -o BatchMode=yes "${PI5_SSH:-pi5}" \
+        "sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' ~/shopflow/.env | tail -n 1" 2>/dev/null | tr -d '\r')
+fi
 GRAFANA_URL=${GRAFANA_URL:-http://$(env_value PI5_HOST):3000}
-[[ -n $GRAFANA_PASSWORD ]] || { echo "GRAFANA_ADMIN_PASSWORD is not in the env file" >&2; exit 2; }
+[[ -n $GRAFANA_PASSWORD ]] || { echo "GRAFANA_ADMIN_PASSWORD is neither in the env file nor on Pi5 (ssh ${PI5_SSH:-pi5})" >&2; exit 2; }
 export GRAFANA_PASSWORD GRAFANA_URL
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
