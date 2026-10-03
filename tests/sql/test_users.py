@@ -12,6 +12,7 @@ import pytest
 from conftest import PASSWORD, ROOT, USER
 
 GRAFANA_PASSWORD = "grafana-test-only"
+AIRFLOW_PASSWORD = "airflow-test-only"
 MARTS = ("mart_revenue_daily", "mart_funnel_daily", "mart_cohort_retention",
          "mart_top_products_daily", "mart_inventory_current", "mart_pipeline_health")
 
@@ -20,7 +21,7 @@ def create_users(ch, **extra):
     env = {**os.environ, "CLICKHOUSE_URL": ch.url, "CLICKHOUSE_USER": USER,
            "CLICKHOUSE_PASSWORD": PASSWORD, "CLICKHOUSE_SPARK_PASSWORD": "spark-test-only",
            "LAN_SUBNET": ch.subnet, "PI5_COMPOSE_SUBNET": ch.subnet,
-           "CLICKHOUSE_AIRFLOW_PASSWORD": "airflow-test-only",
+           "CLICKHOUSE_AIRFLOW_PASSWORD": AIRFLOW_PASSWORD,
            # Never read the real .env: an empty value must mean "not set", not "take it from .env".
            "ENV_FILE": "/nonexistent", **extra}
     return subprocess.run([str(ROOT / "scripts/create-ch-users.sh")], cwd=ROOT, env=env,
@@ -34,17 +35,25 @@ def grafana(ch):
     return ch
 
 
-def as_grafana(ch, sql):
-    """(http status, body) of one statement run as grafana_reader."""
+def as_user(ch, user, password, sql):
+    """(http status, body) of one statement run as the given user."""
     req = urllib.request.Request(
         f"{ch.url}/?database=shopflow&default_format=TSV", data=sql.encode(),
-        headers={"X-ClickHouse-User": "grafana_reader", "X-ClickHouse-Key": GRAFANA_PASSWORD},
+        headers={"X-ClickHouse-User": user, "X-ClickHouse-Key": password},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()
+
+
+def as_grafana(ch, sql):
+    return as_user(ch, "grafana_reader", GRAFANA_PASSWORD, sql)
+
+
+def as_airflow(ch, sql):
+    return as_user(ch, "airflow_reader", AIRFLOW_PASSWORD, sql)
 
 
 def test_grants_are_exactly_the_marts_and_dq_results(grafana):
@@ -91,6 +100,29 @@ def test_no_writes_even_into_a_granted_mart(grafana):
 def test_settings_above_the_profile_maximum_are_rejected(grafana, setting):
     status, body = as_grafana(grafana, f"SELECT 1 SETTINGS {setting}")
     assert status != 200 and "SETTING_CONSTRAINT_VIOLATION" in body, body
+
+
+# In ClickHouse 0 means "no limit": a MAX constraint alone does not stop `SETTINGS x = 0`, so every
+# capped setting also has a MIN above zero (found by the 5.14 review, verified on 25.8).
+@pytest.mark.parametrize("setting", ("max_memory_usage = 0", "max_execution_time = 0",
+                                     "max_rows_to_read = 0"))
+def test_zero_means_unlimited_and_is_rejected_for_grafana(grafana, setting):
+    status, body = as_grafana(grafana, f"SELECT 1 SETTINGS {setting}")
+    assert status != 200 and "SETTING_CONSTRAINT_VIOLATION" in body, body
+
+
+@pytest.mark.parametrize("setting", ("max_memory_usage = 0", "max_execution_time = 0",
+                                     "max_memory_usage = 1073741824", "max_execution_time = 600",
+                                     "max_threads = 8"))
+def test_airflow_reader_limits_cannot_be_lifted(grafana, setting):
+    status, body = as_airflow(grafana, f"SELECT 1 SETTINGS {setting}")
+    assert status != 200 and "SETTING_CONSTRAINT_VIOLATION" in body, body
+
+
+def test_airflow_reader_settings_within_the_profile_are_accepted(grafana):
+    status, body = as_airflow(grafana, "SELECT 1 SETTINGS max_execution_time = 120,"
+                              " max_memory_usage = 268435456")
+    assert status == 200, body
 
 
 def test_settings_within_the_profile_are_accepted(grafana):
