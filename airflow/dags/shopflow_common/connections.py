@@ -15,8 +15,11 @@ CLICKHOUSE_CONNECT_TIMEOUT_S = 10
 CLICKHOUSE_SEND_RECEIVE_TIMEOUT_S = 150
 
 
-def clickhouse_client():
-    """clickhouse_connect client as airflow_reader over the Pi5 compose network."""
+def clickhouse_client(send_receive_timeout: int = CLICKHOUSE_SEND_RECEIVE_TIMEOUT_S):
+    """clickhouse_connect client as airflow_reader over the Pi5 compose network.
+
+    send_receive_timeout: seconds to wait for a reply; a failure callback passes a short one.
+    """
     import clickhouse_connect
     from airflow.sdk import BaseHook
 
@@ -28,7 +31,7 @@ def clickhouse_client():
         password=conn.password,
         database=conn.schema,
         connect_timeout=CLICKHOUSE_CONNECT_TIMEOUT_S,
-        send_receive_timeout=CLICKHOUSE_SEND_RECEIVE_TIMEOUT_S,
+        send_receive_timeout=send_receive_timeout,
     )
 
 
