@@ -235,7 +235,7 @@ def freshness_sql() -> str:
 
 
 def rows_5_8() -> list[dict]:
-    last_runs = (f"WITH last_runs AS (SELECT dag_id, argMax(run_id, checked_at) AS run_id "
+    last_runs = (f"WITH last_runs AS (SELECT dag_id, argMax(run_id, checked_at) AS last_run_id "
                  f"FROM {DQ} FINAL WHERE table_name = '' AND startsWith(run_id, 'scheduled__') "
                  f"GROUP BY dag_id) ")
     dags = ", ".join(f"'{d}'" for d in SCHEDULED_DAGS)
@@ -285,7 +285,7 @@ def rows_5_8() -> list[dict]:
              description="Витрины пересчитываются раз в 2 минуты цепочкой. Оранжевый — "
                          "цепочка отстаёт (> 4 мин), красный — стоит (> 10 мин)."),
         stat(24, "stg_order_items, строк (порог ~4,5 млн)", 6, 62,
-             f"SELECT toUInt64OrNull(argMax(ch_value, checked_at)) AS items FROM {DQ} FINAL "
+             f"SELECT toUInt64(argMax(ch_value, checked_at)) AS items FROM {DQ} FINAL "
              f"WHERE check_name = 'table_size' AND table_name = 'stg_order_items'",
              limits=ITEMS_LIMITS, w=6,
              description="После ~4,5 млн строк fact_orders переходит на таблицу (ADR-0009)."),
@@ -323,7 +323,7 @@ def rows_5_8() -> list[dict]:
               f"SELECT r.dag_id AS dag_id, r.check_name AS `проверка`, r.table_name AS `таблица`, "
               f"toString(r.status) AS status, r.violations AS `нарушений`, "
               f"r.checked_at AS `когда` FROM {DQ} AS r FINAL "
-              f"WHERE (r.dag_id, r.run_id) IN (SELECT dag_id, run_id FROM last_runs) "
+              f"WHERE (r.dag_id, r.run_id) IN (SELECT dag_id, last_run_id FROM last_runs) "
               f"AND r.check_name != 'table_size' "
               f"ORDER BY r.dag_id, r.status DESC, r.check_name, r.table_name",
               overrides=[status_cells()],
@@ -337,7 +337,7 @@ def rows_5_8() -> list[dict]:
               description="Отдельно от плановых: ручной запуск (например, с "
                           "simulate_violation) не красит плановую секцию."),
         table(31, "Размеры таблиц (по данным ретеншн-DAG)", 8, 85, 16, 8,
-              f"SELECT table_name AS `таблица`, toUInt64OrNull(ch_value) AS `строк`, "
+              f"SELECT table_name AS `таблица`, toUInt64(ch_value) AS `строк`, "
               f"JSONExtractUInt(details, 'bytes_on_disk') AS `на диске` FROM {DQ} FINAL "
               f"WHERE check_name = 'table_size' AND run_id = (SELECT argMax(run_id, checked_at) "
               f"FROM {DQ} FINAL WHERE check_name = 'table_size') ORDER BY `на диске` DESC",

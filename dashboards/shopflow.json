@@ -1154,7 +1154,7 @@
           "editorType": "sql",
           "format": 1,
           "queryType": "table",
-          "rawSql": "SELECT toUInt64OrNull(argMax(ch_value, checked_at)) AS items FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size' AND table_name = 'stg_order_items'",
+          "rawSql": "SELECT toUInt64(argMax(ch_value, checked_at)) AS items FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size' AND table_name = 'stg_order_items'",
           "refId": "A"
         }
       ],
@@ -1584,7 +1584,7 @@
           "editorType": "sql",
           "format": 1,
           "queryType": "table",
-          "rawSql": "WITH last_runs AS (SELECT dag_id, argMax(run_id, checked_at) AS run_id FROM shopflow.dq_check_results FINAL WHERE table_name = '' AND startsWith(run_id, 'scheduled__') GROUP BY dag_id) SELECT r.dag_id AS dag_id, r.check_name AS `проверка`, r.table_name AS `таблица`, toString(r.status) AS status, r.violations AS `нарушений`, r.checked_at AS `когда` FROM shopflow.dq_check_results AS r FINAL WHERE (r.dag_id, r.run_id) IN (SELECT dag_id, run_id FROM last_runs) AND r.check_name != 'table_size' ORDER BY r.dag_id, r.status DESC, r.check_name, r.table_name",
+          "rawSql": "WITH last_runs AS (SELECT dag_id, argMax(run_id, checked_at) AS last_run_id FROM shopflow.dq_check_results FINAL WHERE table_name = '' AND startsWith(run_id, 'scheduled__') GROUP BY dag_id) SELECT r.dag_id AS dag_id, r.check_name AS `проверка`, r.table_name AS `таблица`, toString(r.status) AS status, r.violations AS `нарушений`, r.checked_at AS `когда` FROM shopflow.dq_check_results AS r FINAL WHERE (r.dag_id, r.run_id) IN (SELECT dag_id, last_run_id FROM last_runs) AND r.check_name != 'table_size' ORDER BY r.dag_id, r.status DESC, r.check_name, r.table_name",
           "refId": "A"
         }
       ],
@@ -1722,7 +1722,7 @@
           "editorType": "sql",
           "format": 1,
           "queryType": "table",
-          "rawSql": "SELECT table_name AS `таблица`, toUInt64OrNull(ch_value) AS `строк`, JSONExtractUInt(details, 'bytes_on_disk') AS `на диске` FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size' AND run_id = (SELECT argMax(run_id, checked_at) FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size') ORDER BY `на диске` DESC",
+          "rawSql": "SELECT table_name AS `таблица`, toUInt64(ch_value) AS `строк`, JSONExtractUInt(details, 'bytes_on_disk') AS `на диске` FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size' AND run_id = (SELECT argMax(run_id, checked_at) FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size') ORDER BY `на диске` DESC",
           "refId": "A"
         }
       ],

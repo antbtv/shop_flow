@@ -112,3 +112,18 @@ def test_dq_results_are_always_read_with_final(path):
             sql = target["rawSql"]
             for use in re.finditer(r"shopflow\.dq_check_results\b(?: AS \w+)?( FINAL)?", sql):
                 assert use.group(1), f"panel {panel['id']} reads dq_check_results without FINAL"
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.name)
+def test_panels_fit_the_grid_and_do_not_overlap(path):
+    # Nobody looks at the picture in CI: two panels on the same cells are caught here.
+    dash = json.loads(path.read_text())
+    boxes = []
+    for panel in panels(dash):
+        g = panel["gridPos"]
+        assert g["x"] >= 0 and g["w"] > 0 and g["h"] > 0 and g["x"] + g["w"] <= 24, panel["id"]
+        boxes.append((panel["id"], g["x"], g["y"], g["x"] + g["w"], g["y"] + g["h"]))
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            apart = a[3] <= b[1] or b[3] <= a[1] or a[4] <= b[2] or b[4] <= a[2]
+            assert apart, f"panels {a[0]} and {b[0]} overlap"
