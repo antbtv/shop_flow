@@ -109,15 +109,15 @@ q "SELECT if(log_comment != '', log_comment,
      AND (log_comment LIKE 'bench%' OR query_kind = 'Insert')
    ORDER BY event_time_microseconds FORMAT PrettyCompactMonoBlock"
 echo "dimension and mart sizes:"
-q "SELECT 'dim_products', count(), countIf(is_current) FROM $DB.dim_products
-   UNION ALL SELECT 'dim_customers', count(), countIf(is_current) FROM $DB.dim_customers
-   UNION ALL SELECT 'mart_revenue_daily', count(), 0 FROM $DB.mart_revenue_daily
-   UNION ALL SELECT 'mart_funnel_daily', count(), sum(created) FROM $DB.mart_funnel_daily
+q "SELECT 'dim_products', count(), toInt64(countIf(is_current)) FROM $DB.dim_products
+   UNION ALL SELECT 'dim_customers', count(), toInt64(countIf(is_current)) FROM $DB.dim_customers
+   UNION ALL SELECT 'mart_revenue_daily', count(), toInt64(0) FROM $DB.mart_revenue_daily
+   UNION ALL SELECT 'mart_funnel_daily', count(), toInt64(sum(created)) FROM $DB.mart_funnel_daily
    UNION ALL SELECT 'mart_cohort_retention', count(), toInt64(sum(returned)) FROM $DB.mart_cohort_retention
    UNION ALL SELECT 'mart_top_products_daily', count(), toInt64(sum(quantity_net))
        FROM $DB.mart_top_products_daily
    UNION ALL SELECT 'mart_inventory_current', count(), toInt64(sum(is_low)) FROM $DB.mart_inventory_current
-   UNION ALL SELECT 'mart_pipeline_health', count(), 0 FROM $DB.mart_pipeline_health
+   UNION ALL SELECT 'mart_pipeline_health', count(), toInt64(0) FROM $DB.mart_pipeline_health
    FORMAT PrettyCompactMonoBlock"
 fi
 
