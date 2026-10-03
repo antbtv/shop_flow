@@ -1,0 +1,1824 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Операционная аналитика ритейла: данные из Postgres через CDC. ADR-0011.",
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Выручка (FR-4)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Сумма revenue_net витрины mart_revenue_daily за выбранный период.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 0,
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(revenue_net) AS revenue_net FROM shopflow.mart_revenue_daily WHERE $__dateFilter(order_date)",
+          "refId": "A"
+        }
+      ],
+      "title": "Выручка без отменённых",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Из воронки: orders в витрине выручки считает заказ в каждой его категории.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 0,
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(created) AS created FROM shopflow.mart_funnel_daily WHERE $__dateFilter(order_date)",
+          "refId": "A"
+        }
+      ],
+      "title": "Заказов создано",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 1,
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT round(100 * sum(paid) / nullIf(sum(created), 0), 1) AS paid_pct FROM shopflow.mart_funnel_daily WHERE $__dateFilter(order_date)",
+          "refId": "A"
+        }
+      ],
+      "title": "Оплачено, % от созданных",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 1,
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT round(100 * sum(delivered) / nullIf(sum(created), 0), 1) AS delivered_pct FROM shopflow.mart_funnel_daily WHERE $__dateFilter(order_date)",
+          "refId": "A"
+        }
+      ],
+      "title": "Доставлено, % от созданных",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "День — UTC-дата создания заказа, категория на момент заказа (SCD2).",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 5
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toDateTime(order_date) AS time, category, sum(revenue_net) AS revenue_net FROM shopflow.mart_revenue_daily WHERE $__dateFilter(order_date) GROUP BY time, category ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Выручка по дням и категориям (без отменённых)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 5
+      },
+      "id": 7,
+      "options": {},
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT category, sum(revenue_net) AS revenue_net, sum(revenue) AS revenue, sum(items) AS items FROM shopflow.mart_revenue_daily WHERE $__dateFilter(order_date) GROUP BY category ORDER BY revenue_net DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Выручка по категориям за период",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "id": 8,
+      "panels": [],
+      "title": "Воронка (FR-5)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Дошли до статуса (монотонно: доставленный считается и оплаченным). Оплаченный заказ может потом попасть в отменённые.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toDateTime(order_date) AS time, created, paid, shipped, delivered, cancelled FROM shopflow.mart_funnel_daily WHERE $__dateFilter(order_date) ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Заказы по статусам по дням",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Только реальные переходы (не снимки); день без переходов — пропуск, не 0.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toDateTime(order_date) AS time, to_paid_median_s, to_paid_p90_s, paid_to_delivered_median_s, paid_to_delivered_p90_s FROM shopflow.mart_funnel_daily WHERE $__dateFilter(order_date) ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Время переходов: медиана и p90",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "min": 0,
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 11,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(created) AS `создан`, sum(paid) AS `оплачен`, sum(shipped) AS `отгружен`, sum(delivered) AS `доставлен`, sum(cancelled) AS `отменён` FROM shopflow.mart_funnel_daily WHERE $__dateFilter(order_date)",
+          "refId": "A"
+        }
+      ],
+      "title": "Воронка за период",
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "id": 12,
+      "panels": [],
+      "title": "Когорты (FR-6)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Когорта — месяц первого неотменённого заказа клиента; M+N — доля клиентов когорты с неотменённым заказом через N месяцев. Незаконченный текущий месяц не показан (пусто), повторный заказ в месяц первого заказа возвратом не считается. Первые 12 месяцев.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "клиентов"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^M\\+"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-RdYlGr"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 31
+      },
+      "id": 13,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT formatDateTime(cohort_month, '%Y-%m') AS `когорта`, max(customers) AS `клиентов`, round(100 * sumIf(returned, period = 0 AND is_partial = 0) / nullIf(sumIf(customers, period = 0 AND is_partial = 0), 0), 1) AS `M+0`, round(100 * sumIf(returned, period = 1 AND is_partial = 0) / nullIf(sumIf(customers, period = 1 AND is_partial = 0), 0), 1) AS `M+1`, round(100 * sumIf(returned, period = 2 AND is_partial = 0) / nullIf(sumIf(customers, period = 2 AND is_partial = 0), 0), 1) AS `M+2`, round(100 * sumIf(returned, period = 3 AND is_partial = 0) / nullIf(sumIf(customers, period = 3 AND is_partial = 0), 0), 1) AS `M+3`, round(100 * sumIf(returned, period = 4 AND is_partial = 0) / nullIf(sumIf(customers, period = 4 AND is_partial = 0), 0), 1) AS `M+4`, round(100 * sumIf(returned, period = 5 AND is_partial = 0) / nullIf(sumIf(customers, period = 5 AND is_partial = 0), 0), 1) AS `M+5`, round(100 * sumIf(returned, period = 6 AND is_partial = 0) / nullIf(sumIf(customers, period = 6 AND is_partial = 0), 0), 1) AS `M+6`, round(100 * sumIf(returned, period = 7 AND is_partial = 0) / nullIf(sumIf(customers, period = 7 AND is_partial = 0), 0), 1) AS `M+7`, round(100 * sumIf(returned, period = 8 AND is_partial = 0) / nullIf(sumIf(customers, period = 8 AND is_partial = 0), 0), 1) AS `M+8`, round(100 * sumIf(returned, period = 9 AND is_partial = 0) / nullIf(sumIf(customers, period = 9 AND is_partial = 0), 0), 1) AS `M+9`, round(100 * sumIf(returned, period = 10 AND is_partial = 0) / nullIf(sumIf(customers, period = 10 AND is_partial = 0), 0), 1) AS `M+10`, round(100 * sumIf(returned, period = 11 AND is_partial = 0) / nullIf(sumIf(customers, period = 11 AND is_partial = 0), 0), 1) AS `M+11`, round(100 * sumIf(returned, period = 12 AND is_partial = 0) / nullIf(sumIf(customers, period = 12 AND is_partial = 0), 0), 1) AS `M+12` FROM shopflow.mart_cohort_retention GROUP BY cohort_month ORDER BY cohort_month DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Удержание по когортам, % от размера когорты",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 31
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toDateTime(cohort_month) AS time, max(customers) AS customers FROM shopflow.mart_cohort_retention GROUP BY time ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Новых клиентов по месяцам (размер когорты)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "id": 15,
+      "panels": [],
+      "title": "Топ товаров и остатки (FR-7)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Окно 7 суток по UTC-дню создания заказа, включая сегодня; сумма по дням витрины mart_top_products_daily.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "выручка"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "id": 16,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT product_id, argMax(product_name, order_date) AS `товар`, sum(quantity_net) AS `штук`, sum(revenue_net) AS `выручка` FROM shopflow.mart_top_products_daily WHERE order_date >= toDate(now('UTC')) - 6 GROUP BY product_id ORDER BY `выручка` DESC LIMIT 10",
+          "refId": "A"
+        }
+      ],
+      "title": "Топ-10 товаров за 7 дней (без отменённых)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "выручка"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "id": 17,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT product_id, argMax(product_name, order_date) AS `товар`, sum(quantity_net) AS `штук`, sum(revenue_net) AS `выручка` FROM shopflow.mart_top_products_daily WHERE order_date >= toDate(now('UTC')) - 29 GROUP BY product_id ORDER BY `выручка` DESC LIMIT 10",
+          "refId": "A"
+        }
+      ],
+      "title": "Топ-10 товаров за 30 дней (без отменённых)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Остаток меньше 20 штук (порог в DDL mart_inventory_current).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 49
+      },
+      "id": 18,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT countIf(is_low = 1) AS low FROM shopflow.mart_inventory_current",
+          "refId": "A"
+        }
+      ],
+      "title": "Позиций с низким остатком",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 0,
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 49
+      },
+      "id": 19,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(quantity) AS units FROM shopflow.mart_inventory_current",
+          "refId": "A"
+        }
+      ],
+      "title": "Единиц на складах",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "min": 0,
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 16,
+        "x": 8,
+        "y": 49
+      },
+      "id": 20,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^units$/",
+          "values": true
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT category, sum(quantity) AS units FROM shopflow.mart_inventory_current GROUP BY category ORDER BY units DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Остатки по категориям",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "остаток"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 5
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "id": 21,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT product_name AS `товар`, category AS `категория`, warehouse_id AS `склад`, quantity AS `остаток` FROM shopflow.mart_inventory_current WHERE is_low = 1 ORDER BY quantity, product_id LIMIT 50",
+          "refId": "A"
+        }
+      ],
+      "title": "Низкие остатки (50 наименьших)",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "id": 22,
+      "panels": [],
+      "title": "Здоровье пайплайна (NFR-3, FR-8, FR-9)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Витрины пересчитываются раз в 2 минуты цепочкой. Оранжевый — цепочка отстаёт (> 4 мин), красный — стоит (> 10 мин).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 240
+              },
+              {
+                "color": "red",
+                "value": 600
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 62
+      },
+      "id": 23,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT dateDiff('second', max(refreshed_at), now('UTC')) AS refresh_age_s FROM shopflow.mart_pipeline_health",
+          "refId": "A"
+        }
+      ],
+      "title": "Возраст последнего refresh витрин",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "После ~4,5 млн строк fact_orders переходит на таблицу (ADR-0009).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 3500000
+              },
+              {
+                "color": "red",
+                "value": 4500000
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 62
+      },
+      "id": 24,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT toUInt64(argMax(ch_value, checked_at)) AS items FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size' AND table_name = 'stg_order_items'",
+          "refId": "A"
+        }
+      ],
+      "title": "stg_order_items, строк (порог ~4,5 млн)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Возраст refresh — здоровье цепочки. Отставание от источника (now − source_watermark) растёт, когда в Postgres тихо или ноутбук выключен: это не поломка пайплайна.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "возраст refresh, с"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 240
+                    },
+                    {
+                      "color": "red",
+                      "value": 600
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "отставание от источника, с"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "id": 25,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT 'mart_revenue_daily' AS `витрина`, dateDiff('second', max(refreshed_at), now('UTC')) AS `возраст refresh, с`, dateDiff('second', max(source_watermark), now('UTC')) AS `отставание от источника, с` FROM shopflow.mart_revenue_daily UNION ALL SELECT 'mart_funnel_daily' AS `витрина`, dateDiff('second', max(refreshed_at), now('UTC')) AS `возраст refresh, с`, dateDiff('second', max(source_watermark), now('UTC')) AS `отставание от источника, с` FROM shopflow.mart_funnel_daily UNION ALL SELECT 'mart_cohort_retention' AS `витрина`, dateDiff('second', max(refreshed_at), now('UTC')) AS `возраст refresh, с`, dateDiff('second', max(source_watermark), now('UTC')) AS `отставание от источника, с` FROM shopflow.mart_cohort_retention UNION ALL SELECT 'mart_top_products_daily' AS `витрина`, dateDiff('second', max(refreshed_at), now('UTC')) AS `возраст refresh, с`, dateDiff('second', max(source_watermark), now('UTC')) AS `отставание от источника, с` FROM shopflow.mart_top_products_daily UNION ALL SELECT 'mart_inventory_current' AS `витрина`, dateDiff('second', max(refreshed_at), now('UTC')) AS `возраст refresh, с`, dateDiff('second', max(source_watermark), now('UTC')) AS `отставание от источника, с` FROM shopflow.mart_inventory_current",
+          "refId": "A"
+        }
+      ],
+      "title": "Свежесть витрин",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Пусто в давности (NULL) — в таблице ещё нет строк.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "давность, с"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 67
+      },
+      "id": 26,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT name AS `источник`, last_event_time AS `последнее событие`, dateDiff('second', last_event_time, now('UTC')) AS `давность, с` FROM shopflow.mart_pipeline_health WHERE kind = 'source' ORDER BY name",
+          "refId": "A"
+        }
+      ],
+      "title": "Источники: последнее событие",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "давность, с"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 300
+                    },
+                    {
+                      "color": "red",
+                      "value": 600
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ошибка"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "—"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "pattern": ".+",
+                      "result": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    },
+                    "type": "regex"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 67
+      },
+      "id": 27,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT name AS `MV`, status AS `статус`, last_success_time AS `последний успех`, dateDiff('second', last_success_time, now('UTC')) AS `давность, с`, ifNull(last_error, '') AS `ошибка` FROM shopflow.mart_pipeline_health WHERE kind = 'view' ORDER BY name",
+          "refId": "A"
+        }
+      ],
+      "title": "Refreshable MV",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Сторож самого Airflow: красный при > 26 ч без планового запуска; 99999 — планового запуска ещё не было. Падение задачи из-за перезапуска scheduler алерт не шлёт (ADR-0011), здесь это видно.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "часов"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 26
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 75
+      },
+      "id": 28,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "WITH ages AS (SELECT toString(dag_id) AS dag_id, dateDiff('hour', max(checked_at), now('UTC')) AS age_h FROM shopflow.dq_check_results FINAL WHERE table_name = '' AND startsWith(run_id, 'scheduled__') GROUP BY dag_id), known AS (SELECT mapFromArrays(groupArray(dag_id), groupArray(age_h)) AS m FROM ages) SELECT d AS dag_id, if(mapContains(m, d), m[d], 99999) AS `часов` FROM known ARRAY JOIN ['shopflow_reconciliation', 'shopflow_data_quality', 'shopflow_retention'] AS d ORDER BY dag_id",
+          "refId": "A"
+        }
+      ],
+      "title": "Возраст последнего планового запуска, ч",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Последний плановый запуск каждого DAG: сверка (FR-8), качество данных (FR-9), ретеншн (NFR-5). Худшие статусы сверху.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "error": {
+                        "color": "dark-red",
+                        "index": 4,
+                        "text": "error"
+                      },
+                      "lagging": {
+                        "color": "orange",
+                        "index": 2,
+                        "text": "lagging"
+                      },
+                      "ok": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "ok"
+                      },
+                      "source_unavailable": {
+                        "color": "yellow",
+                        "index": 3,
+                        "text": "source_unavailable"
+                      },
+                      "violation": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "violation"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 8,
+        "y": 75
+      },
+      "id": 29,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "WITH last_runs AS (SELECT dag_id, argMax(run_id, checked_at) AS last_run_id FROM shopflow.dq_check_results FINAL WHERE table_name = '' AND startsWith(run_id, 'scheduled__') GROUP BY dag_id) SELECT r.dag_id AS dag_id, r.check_name AS `проверка`, r.table_name AS `таблица`, toString(r.status) AS status, r.violations AS `нарушений`, r.checked_at AS `когда` FROM shopflow.dq_check_results AS r FINAL WHERE (r.dag_id, r.run_id) IN (SELECT dag_id, last_run_id FROM last_runs) AND r.check_name != 'table_size' ORDER BY r.dag_id, r.status DESC, r.check_name, r.table_name",
+          "refId": "A"
+        }
+      ],
+      "title": "Статус последних плановых запусков",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Отдельно от плановых: ручной запуск (например, с simulate_violation) не красит плановую секцию.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "error": {
+                        "color": "dark-red",
+                        "index": 4,
+                        "text": "error"
+                      },
+                      "lagging": {
+                        "color": "orange",
+                        "index": 2,
+                        "text": "lagging"
+                      },
+                      "ok": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "ok"
+                      },
+                      "source_unavailable": {
+                        "color": "yellow",
+                        "index": 3,
+                        "text": "source_unavailable"
+                      },
+                      "violation": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "violation"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 81
+      },
+      "id": 30,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT dag_id, run_id, toString(status) AS status, checked_at AS `когда` FROM shopflow.dq_check_results FINAL WHERE table_name = '' AND check_name != 'table_size' AND NOT startsWith(run_id, 'scheduled__') ORDER BY checked_at DESC LIMIT 10",
+          "refId": "A"
+        }
+      ],
+      "title": "Ручные и тестовые запуски (последние 10)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Тренд диска и порог ADR-0009; пишет shopflow_retention.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "на диске"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 85
+      },
+      "id": 31,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT table_name AS `таблица`, toUInt64(ch_value) AS `строк`, JSONExtractUInt(details, 'bytes_on_disk') AS `на диске` FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size' AND run_id = (SELECT argMax(run_id, checked_at) FROM shopflow.dq_check_results FINAL WHERE check_name = 'table_size') ORDER BY `на диске` DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Размеры таблиц (по данным ретеншн-DAG)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "shopflow-clickhouse"
+      },
+      "description": "Плановая проба shopflow_alert_channel раз в 3 часа: GET без токена на Bot API из контейнера scheduler. Красный — алерты в Telegram не доходят (туннель, ADR-0012), хотя DAG-и зелёные; 99999 — проверок ещё не было.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 7
+              }
+            ]
+          },
+          "unit": "h"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 93
+      },
+      "id": 32,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "shopflow-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT if(countIf(status = 'ok') = 0, 99999, dateDiff('hour', maxIf(checked_at, status = 'ok'), now('UTC'))) AS age_h FROM shopflow.dq_check_results FINAL WHERE check_name = 'telegram_reachable' AND table_name = ''",
+          "refId": "A"
+        }
+      ],
+      "title": "Канал алертов: часов с последней успешной проверки Telegram",
+      "type": "stat"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": [
+    "shopflow"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "1m",
+      "5m",
+      "15m"
+    ]
+  },
+  "timezone": "utc",
+  "title": "ShopFlow",
+  "uid": "shopflow-main",
+  "version": 1
+}

@@ -105,8 +105,10 @@ def ch():
         env = {**os.environ, "CLICKHOUSE_URL": url,
                "CLICKHOUSE_USER": USER, "CLICKHOUSE_PASSWORD": PASSWORD}
         ddl_dir = os.environ.get("SHOPFLOW_DDL_DIR", "clickhouse/ddl")
-        subprocess.run([str(ROOT / "scripts/apply-ddl.sh"), ddl_dir],
-                       cwd=ROOT, env=env, check=True, capture_output=True)
+        applied = subprocess.run([str(ROOT / "scripts/apply-ddl.sh"), ddl_dir],
+                                 cwd=ROOT, env=env, capture_output=True, text=True)
+        if applied.returncode:
+            pytest.fail(f"apply-ddl.sh failed:\n{applied.stdout[-1500:]}\n{applied.stderr[-1500:]}")
         yield ClickHouse(url, name, name, subnet)
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)

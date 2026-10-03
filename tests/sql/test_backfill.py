@@ -78,7 +78,8 @@ def spark_ch(ch):
     env = {**os.environ, "CLICKHOUSE_URL": ch.url, "CLICKHOUSE_USER": "admin",
            "CLICKHOUSE_PASSWORD": "test-only", "CLICKHOUSE_SPARK_PASSWORD": SPARK_PASSWORD,
            "LAN_SUBNET": ch.subnet, "PI5_COMPOSE_SUBNET": ch.subnet,
-           "CLICKHOUSE_AIRFLOW_PASSWORD": "airflow-test-only"}
+           "CLICKHOUSE_AIRFLOW_PASSWORD": "airflow-test-only",
+           "ENV_FILE": "/nonexistent"}
     subprocess.run([str(ROOT / "scripts/create-ch-users.sh")], cwd=ROOT, env=env,
                    check=True, capture_output=True)
     for name in TABLES:

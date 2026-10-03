@@ -12,6 +12,7 @@
     | Airflow api-server | 768m | 302 МБ |
     | Airflow dag-processor | 512m | 227 МБ |
     | Postgres (метабаза Airflow) | 256m | 50 МБ |
+    | Grafana (M5, ADR-0011) | 384m на grafana-server и плагин ClickHouse | замер в 5.12 |
 
   - ClickHouse: `max_server_memory_usage` 2 ГБ; зазор ~0,75 ГБ до `mem_limit` под отображённый бинарник и страничный кеш, которые тоже считаются в cgroup. `mark_cache_size` 256 МБ, `index_mark_cache_size` 64 МБ, `uncompressed_cache_size` 0. System-логи `trace_log`, `metric_log`, `asynchronous_metric_log`, `text_log`, `query_thread_log`, `query_views_log`, `processors_profile_log` выключены; `query_log` и `part_log` с TTL 7 дней. `background_pool_size` по умолчанию (уменьшение ломает старт, код 36).
   - Airflow 3.1: LocalExecutor, `parallelism` 2, метабаза на Postgres, 1 воркер api-server, без примеров DAG. Задачи выполняются внутри контейнера scheduler, ~340 МБ на задачу.
@@ -25,5 +26,7 @@
 - **Последствия:**
   - Узкое место Pi5 — CPU, а не память: тяжёлый `GROUP BY` на 1 млрд строк идёт ~190 с при свободной памяти. Витрины строим через материализованные представления и агрегаты, а не через `GROUP BY` по сырым событиям (Milestone 3).
   - При добавлении DAG с тяжёлыми Python-задачами пересмотреть лимит scheduler.
+  - dag-processor (5.12): `memory.peak` cgroup на старте 470 из 512 МиБ (основной процесс ~194 МиБ + два парсера по умолчанию), в покое `anon` 196 МиБ. `docker stats` раз в 5 с этот пик не видел (в M4 «296»): пики сервисов мерить по `memory.peak`, а не по `docker stats`. Оставлено `mem_limit` 512m, а число процессов парсинга снижено до 1 (`AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES`); замер (A/B на Pi5, `scripts/pi5/start-peak.sh`): `anon` на старте 480 МиБ при двух парсерах и 360 при одном (запас ~30 %), `memory.events max` 130 против 0. Счётчик `memory.events max` у сервисов с файловым кешем (Grafana: `anon` 110, `file` 224 МиБ при лимите 384) растёт от заполнения кеша и сам по себе не признак нехватки памяти; критерий — `oom_kill` и `anon`.
+  - Туннель к Telegram (ADR-0012): `amneziawg-go` — хостовый процесс вне cgroup контейнеров, живёт в резерве памяти ОС, не в бюджете 6 ГБ; RSS замерить под нагрузкой (5.12).
   - Итоговый `docker-compose.pi5.yml` (M1, M4) переносит эти лимиты и конфиг ClickHouse.
 - **История для интервью:** лимиты подобраны по замерам (`memory.events`, `memory.swap.current`), а не на глаз; первая гипотеза (медленный запрос из-за памяти) проверена и опровергнута.

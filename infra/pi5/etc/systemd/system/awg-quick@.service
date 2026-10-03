@@ -1,0 +1,24 @@
+# AmneziaWG tunnel for Pi5 (ADR-0012). Installed by scripts/pi5/install-awg.sh as
+# /etc/systemd/system/awg-quick@.service; enable with: systemctl enable --now awg-quick@awg0
+# Binaries are in /usr/local/bin (built on the laptop, no package exists for Debian 13).
+[Unit]
+Description=AmneziaWG via awg-quick(8) for %I
+# network-online: at boot Wi-Fi and DNS may be late; a oneshot unit that fails once would stay
+# failed, so it is also retried (Restart).
+After=network-online.target nss-lookup.target
+Wants=network-online.target nss-lookup.target
+Documentation=https://github.com/amnezia-vpn/amneziawg-tools
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30
+Environment=PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+Environment=WG_QUICK_USERSPACE_IMPLEMENTATION=/usr/local/bin/amneziawg-go
+Environment=WG_ENDPOINT_RESOLUTION_RETRIES=infinity
+ExecStart=/usr/local/bin/awg-quick up %i
+ExecStop=/usr/local/bin/awg-quick down %i
+
+[Install]
+WantedBy=multi-user.target

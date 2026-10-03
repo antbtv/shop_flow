@@ -11,3 +11,8 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+
+# Local build output (AmneziaWG binaries, ADR-0012)
+build/
+# Real AmneziaWG configs hold private keys (ADR-0012); only *.example is tracked
+infra/pi5/etc/amnezia/*.conf

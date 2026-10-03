@@ -1,0 +1,37 @@
+# Template of /etc/amnezia/amneziawg/awg0.conf on Pi5 (ADR-0012). The REAL file holds keys: it
+# lives only on Pi5 (root:root 600) and in the laptop's private folder, never in git (.gitignore).
+#
+# Fill it from the native config that the Amnezia app exports for a NEW device (not the laptop's).
+# Copy Address, PrivateKey, every AmneziaWG parameter (Jc ... H4, I1 ... I5 if present), the
+# [Peer] keys and Endpoint exactly. Then change ONLY what is listed here:
+#   - AllowedIPs: the Telegram subnets below, never 0.0.0.0/0 or ::/0 (the default route and the
+#     rest of Pi5 traffic stay as they are);
+#   - no DNS= line: it would switch the DNS of the host and of Docker to the VPN provider's;
+#   - IPv4 only: drop IPv6 addresses from Address, there are no IPv6 routes on Pi5;
+#   - MTU = 1280 and PersistentKeepalive = 25 (Pi5 sits behind the router's NAT).
+# Subnets: https://core.telegram.org/resources/cidr.txt (not reachable from Pi5: take it on the
+# laptop; the Bot API needs only 149.154.160.0/20, the rest is for the same operator's ranges).
+[Interface]
+Address = 10.8.1.2/32
+PrivateKey = <PrivateKey of this device>
+MTU = 1280
+Jc = <copy>
+Jmin = <copy>
+Jmax = <copy>
+S1 = <copy>
+S2 = <copy>
+H1 = <copy>
+H2 = <copy>
+H3 = <copy>
+H4 = <copy>
+# TCP from containers to Telegram: the tunnel MTU is below the bridge's 1500, without clamping
+# a TLS handshake from a container can hang while curl on the host works (ADR-0012).
+PostUp = iptables -t mangle -A FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+PostDown = iptables -t mangle -D FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+[Peer]
+PublicKey = <PublicKey of the server>
+PresharedKey = <PresharedKey, if the exported config has one>
+Endpoint = <server address>:<port>
+AllowedIPs = 91.108.4.0/22, 91.108.8.0/22, 91.108.12.0/22, 91.108.16.0/22, 91.108.20.0/22, 91.108.56.0/22, 91.105.192.0/23, 149.154.160.0/20, 185.76.151.0/24
+PersistentKeepalive = 25

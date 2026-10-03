@@ -210,8 +210,8 @@ flowchart LR
     SPARK --> CH[(ClickHouse<br/>Pi5)]
     AF[Airflow<br/>Pi5] --> CH
     AF --> PG
-    CH --> DASH[Дашборд]
-    AF -.алерты.-> TG[Telegram]
+    CH --> DASH[Grafana<br/>Pi5]
+    AF -.алерты через туннель AmneziaWG.-> TG[Telegram]
 ```
 
 Тяжёлые по памяти компоненты (брокер сообщений, Spark) — на ноутбуке; лёгкие по CPU, но требующие постоянной доступности (ClickHouse как хранилище, Airflow как планировщик) — на Pi5, который работает как always-on сервер с низким энергопотреблением.
@@ -219,8 +219,9 @@ flowchart LR
 ### 6.1 Сеть ноутбук ↔ Pi5
 
 - Pi5 получает статический IP (или DHCP-резервацию) в домашней сети.
-- Открытые порты на Pi5: ClickHouse HTTP (8123), ClickHouse native (9000), Airflow webserver (8080).
+- Открытые порты на Pi5: ClickHouse HTTP (8123), ClickHouse native (9000), Airflow webserver (8080), Grafana (3000, M5).
 - Аутентификация — базовая (домашняя сеть, наружу не пробрасывается); порты наружу не открывать.
+- Исходящий канал (FR-11): сеть Pi5 блокирует Telegram, Bot API доступен через хостовый туннель AmneziaWG только к подсетям Telegram (default route и DNS не меняются, вход через туннель закрыт в `DOCKER-USER`), доступность проверяет плановая проба. См. `docs/adr/0012-pi5-telegram-tunnel.md`.
 - Ноутбук (с Milestone 4, FR-8): Postgres (5432) на LAN-адресе ноутбука, `pg_hba` пускает из LAN только роль `recon_reader` (только SELECT) с IP Pi5. См. `docs/adr/0010-airflow-pi5-postgres-access.md`.
 
 ### 6.2 Топики брокера сообщений
@@ -237,41 +238,42 @@ flowchart LR
 | Потоковая обработка | Spark Structured Streaming | Продолжение опыта на Flink в X5 — второй streaming-движок в портфолио |
 | OLAP-хранилище | ClickHouse | Продолжает историю про интервью в SberData |
 | Оркестрация | Airflow | Знаком по прошлому опыту, стандарт индустрии для DAG-оркестрации |
-| Дашборд | Grafana или Superset | Открытый вопрос — см. раздел 13 |
+| Дашборд | Grafana | Выбрана 2026-10-03: на Pi5 работает при выключенном ноутбуке (NFR-6), ~0,4 ГБ в резерве ADR-0004. Superset отклонён: ≥ 1 ГБ и только на ноутбуке. См. `docs/adr/0011-grafana-pi5-telegram-alerts.md` |
 
 ## 8. Структура репозитория
 
 ```
-retail-cdc-platform/
-├── docker-compose.laptop.yml   # Postgres, Debezium (Kafka Connect), Kafka
-├── docker-compose.pi5.yml      # ClickHouse, Airflow
-├── generator/
-│   └── generate_orders.py      # синтетический генератор нагрузки
+shopflow/
+├── docker-compose.laptop.yml   # Postgres, Debezium (Kafka Connect), Kafka, Spark, генератор (профиль)
+├── docker-compose.pi5.yml      # ClickHouse, Airflow, Grafana
+├── postgres/                   # init-скрипты, шаблон pg_hba
+├── debezium/                   # конфиг коннектора
+├── generator/                  # синтетический генератор нагрузки
 ├── spark-jobs/                 # образ Spark и streaming job (ADR-0008)
-│   ├── Dockerfile
-│   ├── shopflow_stream/        # разбор конверта, дедупликация
-│   └── streaming_to_clickhouse.py
 ├── clickhouse/
-│   └── ddl/                    # SQL из раздела 5.2
+│   ├── ddl/                    # SQL из раздела 5.2 (по порядку номеров)
+│   ├── config.d/, users.d/     # конфиг сервера и профили пользователей
 ├── airflow/                    # образ Airflow и DAG (ADR-0010)
 │   ├── Dockerfile
 │   └── dags/
-│       ├── shopflow_common/        # подключения, «источник недоступен», запись dq_check_results
-│       ├── shopflow_checks/        # сверка (FR-8), DQ (FR-9), ретеншн (NFR-5)
+│       ├── shopflow_common/        # подключения, callbacks, Telegram, запись dq_check_results
+│       ├── shopflow_checks/        # сверка (FR-8), DQ (FR-9), ретеншн (NFR-5), проба канала алертов
 │       ├── sql/dq/                 # проверки FR-9
-│       ├── reconciliation_dag.py
-│       ├── data_quality_dag.py
-│       └── retention_dag.py
-├── dashboards/
+│       ├── reconciliation_dag.py, data_quality_dag.py, retention_dag.py
+│       ├── shopflow_alert_channel.py   # проба доступности Telegram (ADR-0012)
+│       └── shopflow_healthcheck.py     # ручной smoke
+├── grafana/                    # образ Grafana с закреплённым плагином ClickHouse и provisioning (ADR-0011)
+├── dashboards/                 # shopflow.json (генерирует scripts/build_dashboard.py)
 ├── infra/
-│   ├── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw, systemd) и runbook
+│   ├── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw, systemd, туннель AmneziaWG), README
 │   └── laptop/                 # sysctl ноутбука для доступа Pi5 к Postgres (ADR-0010)
-├── postgres/                   # init-скрипты и шаблон pg_hba
-├── scripts/                    # DDL, пользователи ClickHouse, проверки; pi5/ — скрипты для Pi5
+├── scripts/                    # DDL, пользователи ClickHouse, проверки, нагрузка; pi5/ — скрипты для Pi5
 ├── tests/                      # pytest; sql/ — на временных ClickHouse и Postgres
 ├── docs/
-│   └── architecture.md
-└── README.md
+│   ├── adr/                    # решения ADR-0001…0012
+│   ├── runbook-laptop.md       # запуск, проверки, аварии
+│   └── STATUS.md               # статус milestone и задач
+└── README.md                   # описание, диаграмма, запуск (архитектура — здесь и в разделе 6)
 ```
 
 ## 9. Конфигурация и окружение
@@ -336,8 +338,8 @@ CLICKHOUSE_AIRFLOW_PASSWORD=changeme
 - [ ] DAG ретеншна/TTL
 
 **Milestone 5 — наблюдаемость и презентация**
-- [ ] Представления для когорт (FR-6), топа товаров и остатков (FR-7) поверх `fact_orders` и `stg_inventory` из M3
-- [ ] Дашборд (Grafana/Superset) — витрины из FR-4–FR-7
+- [ ] Витрины (refreshable MV) для когорт (FR-6), топа товаров и остатков (FR-7) поверх `stg_orders`, `fact_orders` и `stg_inventory` из M3
+- [ ] Дашборд Grafana на Pi5 (ADR-0011) — витрины из FR-4–FR-7 и здоровье пайплайна
 - [ ] Алерты в Telegram (FR-11)
 - [ ] README с диаграммой архитектуры и инструкцией по запуску
 
@@ -358,4 +360,4 @@ CLICKHOUSE_AIRFLOW_PASSWORD=changeme
 
 ## 13. Открытые вопросы
 
-- **Дашборд:** Grafana или Superset — не зафиксировано.
+Открытых вопросов нет. Дашборд: Grafana на Pi5 (решение 2026-10-03, ADR-0011).

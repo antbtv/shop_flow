@@ -1,7 +1,7 @@
 # Pi5 stack (NFR-2): ClickHouse and Airflow. Run on Pi5 from ~/shopflow:
 #   docker compose -f docker-compose.pi5.yml build && docker compose -f docker-compose.pi5.yml up -d
 # Needs ~/shopflow/.env on Pi5 (template: infra/pi5/pi5.env.example). Deploy: ADR-0007.
-# Memory: ADR-0004. Network: ports only on the LAN address, ADR-0003. Airflow: ADR-0010.
+# Memory: ADR-0004. Network: ports only on the LAN address, ADR-0003. Airflow: ADR-0010. Grafana: ADR-0011.
 name: shopflow
 
 # Airflow 3.1, LocalExecutor: tasks run inside the scheduler container (ADR-0004).
@@ -131,6 +131,11 @@ services:
         "password": "${RECON_READER_PASSWORD:?set RECON_READER_PASSWORD}",
         "extra": {"connect_timeout": "10", "keepalives": "1", "keepalives_idle": "30",
         "keepalives_interval": "10", "keepalives_count": "3"}}
+      # Failure alerts (FR-11, ADR-0011): only the scheduler, where the task callbacks run. Empty
+      # means "no alert is sent, a warning goes to the task log". TELEGRAM_API_URL is for tests.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_API_URL: ${TELEGRAM_API_URL:-https://api.telegram.org}
     # Let running tasks finish their ClickHouse insert before SIGKILL.
     stop_grace_period: 60s
     healthcheck:
@@ -146,6 +151,56 @@ services:
     <<: *airflow
     mem_limit: 512m
     command: dag-processor
+    environment:
+      <<: *airflow-env
+      # One parsing process: with the default two the start peaked at 470 of 512 MiB (memory.peak,
+      # 5.12; docker stats sampled every 5 s had missed it). Parsing five DAG files in turn is fast
+      # enough. New files are picked up every refresh_interval = 300 s. The variable is for A/B
+      # measurements (scripts/pi5/start-peak.sh), not for .env.
+      AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: ${DAG_PROCESSOR_PARSING_PROCESSES:-1}
+
+  # Dashboard (FR-10, ADR-0011). The plugin is baked into the image, nothing is downloaded at start.
+  # No depends_on: Grafana comes up without ClickHouse and shows an error per panel instead.
+  # Limit covers grafana-server and the ClickHouse backend plugin (a separate process, same cgroup).
+  grafana:
+    build: ./grafana
+    image: shopflow-grafana:12.4.3
+    mem_limit: 384m
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      # Without it the data source password in SQLite is encrypted with Grafana's public default key.
+      GF_SECURITY_SECRET_KEY: ${GRAFANA_SECRET_KEY:?set GRAFANA_SECRET_KEY}
+      CLICKHOUSE_GRAFANA_PASSWORD: ${CLICKHOUSE_GRAFANA_PASSWORD:?set CLICKHOUSE_GRAFANA_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      # One alert channel: Airflow to Telegram. Grafana's own scheduler would cost CPU and memory.
+      GF_UNIFIED_ALERTING_ENABLED: "false"
+      # No internet at start or at runtime: plugins are baked, no update checks, no external snapshots.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      # Marts refresh every 2 minutes: faster dashboards only add load on a CPU-bound Pi5.
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 30s
+      # The Go runtime of grafana-server stays well under the cgroup limit; the plugin process
+      # is not covered by it, the sum is measured in M5 task 5.12.
+      GOMEMLIMIT: 256MiB
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana-dashboards:ro
+    ports:
+      - "${PI5_HOST:?set PI5_HOST}:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q '\"database\": \"ok\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
 # Pinned: airflow_reader may connect to ClickHouse only from this subnet (ADR-0010).
 networks:
@@ -158,3 +213,4 @@ volumes:
   clickhouse-data:
   airflow-db:
   airflow-logs:
+  grafana-data:

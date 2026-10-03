@@ -1,9 +1,11 @@
 # Sourced by ClickHouse scripts. Sets CLICKHOUSE_URL, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD and ch_curl.
-# Missing variables are read from .env (only these keys, without sourcing it, never printed).
+# Missing variables are read from .env (only these keys, without sourcing it, never printed);
+# ENV_FILE points elsewhere, tests set it to a missing file so a developer's real .env never leaks in.
 # The password goes in a header read from a file descriptor: not in the URL, not visible in ps.
 
 env_value() {
-    [[ -f .env ]] && sed -n "s/^$1=//p" .env | tail -n 1
+    local file=${ENV_FILE:-.env}
+    [[ -f $file ]] && sed -n "s/^$1=//p" "$file" | tail -n 1
 }
 for var in PI5_HOST CLICKHOUSE_HTTP_PORT CLICKHOUSE_USER CLICKHOUSE_PASSWORD; do
     [[ -n ${!var:-} ]] || printf -v "$var" '%s' "$(env_value "$var")"

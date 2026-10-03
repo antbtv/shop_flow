@@ -1,0 +1,27 @@
+# The only data source (ADR-0011). Reads marts as grafana_reader: readonly = 2, MAX 30 s and
+# 256 MiB (scripts/create-ch-users.sh). The plugin driver sends max_execution_time = the time left
+# to the query deadline + about 5 s (5.5 stand: queryTimeout 30 went out as 35 and every panel failed
+# with SETTING_CONSTRAINT_VIOLATION, dialTimeout 10 went out as 14). So queryTimeout and dialTimeout
+# must stay at least 5 s below the profile maximum. The password comes from the environment of
+# the grafana service ($__env), never from this file.
+apiVersion: 1
+datasources:
+  - name: ShopFlow ClickHouse
+    uid: shopflow-clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: true
+    editable: false
+    jsonData:
+      host: clickhouse
+      port: 8123
+      protocol: http
+      secure: false
+      username: grafana_reader
+      defaultDatabase: shopflow
+      dialTimeout: "10"
+      queryTimeout: "20"
+      maxOpenConns: 2
+      maxIdleConns: 2
+    secureJsonData:
+      password: $__env{CLICKHOUSE_GRAFANA_PASSWORD}

@@ -17,6 +17,7 @@ ddl=$(mktemp -d)
 trap 'rm -r "$ddl"' EXIT
 for f in clickhouse/ddl/*.sql; do
     sed -e "s/shopflow\./$DB./g" -e "s/DATABASE IF NOT EXISTS shopflow;/DATABASE IF NOT EXISTS $DB;/" \
+        -e "s/database = 'shopflow'/database = '$DB'/" \
         "$f" > "$ddl/$(basename "$f")"
 done
 scripts/apply-ddl.sh "$ddl" >/dev/null
@@ -78,10 +79,16 @@ q "SELECT table, sum(rows), formatReadableSize(sum(bytes_on_disk)) FROM system.p
    FORMAT PrettyCompactMonoBlock"
 
 start=$(q "SELECT now()")
-for mv in dim_customers_mv dim_products_mv mart_revenue_daily_mv mart_funnel_daily_mv; do
+# The chain in DEPENDS ON order (ADR-0009, ADR-0011); chain_ms is the sum of the pauses between
+# refreshes, i.e. what one 2-minute period of the real chain has to fit (task 5.3).
+chain_t0=$(date +%s%N)
+for mv in dim_customers_mv dim_products_mv mart_revenue_daily_mv mart_funnel_daily_mv \
+          mart_cohort_retention_mv mart_top_products_daily_mv mart_inventory_current_mv \
+          mart_pipeline_health_mv; do
     q "SYSTEM REFRESH VIEW $DB.$mv"
     q "SYSTEM WAIT VIEW $DB.$mv" || true
 done
+echo "chain_ms: $(( ($(date +%s%N) - chain_t0) / 1000000 ))"
 q "SELECT view, status, last_success_duration_ms, exception FROM system.view_refreshes
    WHERE database = '$DB' ORDER BY view FORMAT PrettyCompactMonoBlock"
 
@@ -102,10 +109,15 @@ q "SELECT if(log_comment != '', log_comment,
      AND (log_comment LIKE 'bench%' OR query_kind = 'Insert')
    ORDER BY event_time_microseconds FORMAT PrettyCompactMonoBlock"
 echo "dimension and mart sizes:"
-q "SELECT 'dim_products', count(), countIf(is_current) FROM $DB.dim_products
-   UNION ALL SELECT 'dim_customers', count(), countIf(is_current) FROM $DB.dim_customers
-   UNION ALL SELECT 'mart_revenue_daily', count(), 0 FROM $DB.mart_revenue_daily
-   UNION ALL SELECT 'mart_funnel_daily', count(), sum(created) FROM $DB.mart_funnel_daily
+q "SELECT 'dim_products', count(), toInt64(countIf(is_current)) FROM $DB.dim_products
+   UNION ALL SELECT 'dim_customers', count(), toInt64(countIf(is_current)) FROM $DB.dim_customers
+   UNION ALL SELECT 'mart_revenue_daily', count(), toInt64(0) FROM $DB.mart_revenue_daily
+   UNION ALL SELECT 'mart_funnel_daily', count(), toInt64(sum(created)) FROM $DB.mart_funnel_daily
+   UNION ALL SELECT 'mart_cohort_retention', count(), toInt64(sum(returned)) FROM $DB.mart_cohort_retention
+   UNION ALL SELECT 'mart_top_products_daily', count(), toInt64(sum(quantity_net))
+       FROM $DB.mart_top_products_daily
+   UNION ALL SELECT 'mart_inventory_current', count(), toInt64(sum(is_low)) FROM $DB.mart_inventory_current
+   UNION ALL SELECT 'mart_pipeline_health', count(), toInt64(0) FROM $DB.mart_pipeline_health
    FORMAT PrettyCompactMonoBlock"
 fi
 

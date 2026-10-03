@@ -55,11 +55,32 @@ class Outcome:
         return self.rows[0]
 
 
-def reconciliation_outcome(sensor_state: str | None, run: dict | None) -> Outcome:
-    """sensor_state: final state of wait_for_postgres; run: XCom of reconcile/recheck or None.
+FAILED_STATES = ("failed", "upstream_failed")
 
+
+def failed_upstream(states: dict[str, object] | None) -> dict[str, str]:
+    """Tasks of the run that failed (or were never run because an upstream failed)."""
+    failed = {}
+    for task_id, state in (states or {}).items():
+        name = str(getattr(state, "value", state))
+        if name in FAILED_STATES:
+            failed[task_id] = name
+    return failed
+
+
+def reconciliation_outcome(sensor_state: str | None, run: dict | None,
+                           upstream: dict[str, object] | None = None) -> Outcome:
+    """sensor_state: final state of wait_for_postgres; run: XCom of reconcile/recheck or None;
+    upstream: states of all upstream tasks of report (task_id -> state).
+
+    Any failed upstream task is an error, whatever the XCom still holds: a failed recheck
+    leaves the XCom of reconcile, which looks like a clean run.
     The first row is the run summary (table_name ''), then one row per table.
     """
+    failed = failed_upstream(upstream)
+    if failed:
+        reason = "upstream task failed: " + ", ".join(f"{t} {s}" for t, s in failed.items())
+        return Outcome("error", [Row("", "error", details={"reason": reason})])
     if sensor_state == "skipped" or (run or {}).get("source_unavailable"):
         return Outcome("source_unavailable", [Row("", "source_unavailable")])
     if run is None:

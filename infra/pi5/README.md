@@ -85,6 +85,42 @@ docker compose -f docker-compose.memtest.yml up -d && sleep 90 && ./loadtest.sh
 docker compose -f docker-compose.memtest.yml down -v
 ```
 
+## 8. Tunnel to Telegram (ADR-0012)
+
+The Pi5 network blocks Telegram. The Airflow alerts reach the Bot API through an AmneziaWG tunnel on
+the host that routes only Telegram's ranges. Binaries are built on the laptop (no GitHub on Pi5).
+
+On the laptop:
+
+```bash
+# 1. Amnezia app: add a NEW device to the subscription, export its AmneziaWG native config as a file
+#    (not the laptop's config). Keep it in a private folder outside the repository.
+# 2. Narrow it (keys and AmneziaWG parameters stay, AllowedIPs/DNS/MTU/MSS are set), no secret is printed:
+python3 scripts/pi5/prepare-awg-config.py ~/amnezia/exported.conf ~/amnezia/awg0.conf
+# 3. Build (once, pinned sources, checks sha256) and test the template locally:
+scripts/pi5/build-awg.sh && ARCH=amd64 scripts/pi5/build-awg.sh && scripts/pi5/test-awg-local.sh
+# 4. Ship to Pi5 (the config goes over ssh, mode 600):
+ssh pi5 'mkdir -p ~/awg-stage && chmod 700 ~/awg-stage'
+rsync -av build/awg/arm64/amneziawg-go build/awg/arm64/awg build/awg/arm64/awg-quick \
+    build/awg/arm64/SHA256SUMS infra/pi5/etc/systemd/system/awg-quick@.service \
+    scripts/pi5/install-awg.sh pi5:awg-stage/
+rsync -av --chmod=F600 ~/amnezia/awg0.conf pi5:awg-stage/awg0.conf
+```
+
+On Pi5 (from the laptop; asks for the sudo password):
+
+```bash
+ssh -t pi5 'sudo bash ~/awg-stage/install-awg.sh'
+```
+
+The installer checks sha256 and refuses a config that is not narrow, adds the `DOCKER-USER` rule for
+`awg0` (`-i awg0 -m conntrack --ctstate NEW -j DROP`, part of `etc/ufw/after.rules.snippet`), starts
+`awg-quick@awg0` and prints routes, handshake and a Telegram probe from the host and from the scheduler
+container. Remove: `sudo bash ~/awg-stage/install-awg.sh uninstall`. Revoke the device in the Amnezia app.
+
+Checks later: `sudo awg show awg0 latest-handshakes` (epoch seconds, recent), `ip route get 149.154.166.110`
+(`dev awg0`), `ip route show default` unchanged, dashboard panel "Канал алертов" green.
+
 ## Measured baseline (2026-09-26)
 
 | Item | Value |
