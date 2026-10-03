@@ -1,6 +1,6 @@
 # Runbook: CDC-стек на ноутбуке и ClickHouse на Pi5
 
-Как поднять и проверить цепочку Postgres → Debezium → Kafka (ноутбук) и ClickHouse (Pi5). Решения: [ADR-0005](adr/0005-cdc-contract.md) (контракт CDC), [ADR-0006](adr/0006-clickhouse-schema-idempotency.md) (схема ClickHouse), [ADR-0007](adr/0007-pi5-deploy.md) (деплой на Pi5), [ADR-0008](adr/0008-spark-streaming-job.md) (Spark), [ADR-0009](adr/0009-scd2-fact-marts.md) (SCD2, факт, витрины), [ADR-0010](adr/0010-airflow-pi5-postgres-access.md) (Airflow, доступ к Postgres, сверка). Хост Pi5: [`infra/pi5/README.md`](../infra/pi5/README.md).
+Как поднять и проверить цепочку Postgres → Debezium → Kafka (ноутбук) и ClickHouse (Pi5). Решения: [ADR-0005](adr/0005-cdc-contract.md) (контракт CDC), [ADR-0006](adr/0006-clickhouse-schema-idempotency.md) (схема ClickHouse), [ADR-0007](adr/0007-pi5-deploy.md) (деплой на Pi5), [ADR-0008](adr/0008-spark-streaming-job.md) (Spark), [ADR-0009](adr/0009-scd2-fact-marts.md) (SCD2, факт, витрины), [ADR-0010](adr/0010-airflow-pi5-postgres-access.md) (Airflow, доступ к Postgres, сверка), [ADR-0011](adr/0011-grafana-pi5-telegram-alerts.md) (Grafana, алерты), [ADR-0012](adr/0012-pi5-telegram-tunnel.md) (туннель к Telegram). Хост Pi5: [`infra/pi5/README.md`](../infra/pi5/README.md).
 
 Все команды выполняются из корня репозитория на ноутбуке. Сокращение: `D="docker compose -f docker-compose.laptop.yml"`.
 
@@ -197,6 +197,7 @@ Airflow 3.1 (LocalExecutor, FAB) в `docker-compose.pi5.yml`, образ `airflo
 | `shopflow_reconciliation` | 20:00 | FR-8: сверка 5 таблиц Postgres ↔ ClickHouse | да, ждёт до 2 ч |
 | `shopflow_data_quality` | 20:30 | FR-9: 12 проверок `airflow/dags/sql/dq/*.sql` | нет |
 | `shopflow_retention` | 04:00 | NFR-5: TTL `raw_events`, размеры таблиц, логи Airflow > 30 дней | нет |
+| `shopflow_alert_channel` | каждые 3 ч, :40 | доступность Telegram из scheduler, строка `telegram_reachable` в `dq_check_results` | нет |
 | `shopflow_healthcheck` | вручную | связь с ClickHouse и Postgres | да |
 
 Метабазу Airflow чистит не DAG, а systemd-таймер Pi5 `shopflow-airflow-db-clean.timer` (вс 04:30, > 30 дней): Airflow 3 закрывает метабазу для задач. Установка — в шапке `infra/pi5/etc/systemd/system/shopflow-airflow-db-clean.service`.
@@ -212,6 +213,10 @@ ssh pi5 'SKIP_WAIT=1 bash -s -- trigger shopflow_reconciliation' < scripts/pi5/a
 ssh pi5 'bash -s' < scripts/pi5/reconcile-once.sh    # разовая сверка логикой DAG, вывод в терминал
 ssh pi5 'bash -s' < scripts/pi5/airflow-smoke.sh     # импорт DAG, подключения, маскирование паролей
 ssh pi5 'bash -s' < scripts/pi5/loadtest-m4.sh       # память стека с тремя DAG (15 мин, генератор на ноутбуке)
+ssh pi5 'bash -s' < scripts/pi5/alerts-smoke.sh      # где виден токен Telegram (только у scheduler), нет ли его в логах
+ssh pi5 'bash -s -- airflow-dag-processor 60' < scripts/pi5/start-peak.sh   # пик старта сервиса: anon отдельно от кеша
+scripts/loadtest-m5-laptop.sh > /tmp/m5-laptop.log 2>&1 &   # M5: генератор, «зрители» дашборда, память ноутбука
+ssh pi5 'bash -s' < scripts/pi5/loadtest-m5.sh       # M5: память и задержки Pi5 (15 мин), параллельно с ноутбучной частью
 STAGES=checks scripts/bench-marts.sh               # с ноутбука: сверка и DQ под лимитами airflow_reader на shopflow_bench
 ```
 
@@ -252,6 +257,27 @@ SHOPFLOW_SPARK_TESTS=1 .venv/bin/python -m pytest -q tests/sql/test_backfill.py 
 ```
 
 `tests/test_dags.py` разбирает DAG в образе `shopflow-airflow:3.1.0` (`docker build -t shopflow-airflow:3.1.0 airflow/`). `scripts/bench-marts.sh` — замер витрин на 1 млн заказов в отдельной базе `shopflow_bench` (ADR-0009, порог перехода `fact_orders` на таблицу); базу потом удалить вручную.
+
+### Алерты в Telegram (FR-11, ADR-0011, ADR-0012)
+
+- **Кто алертит.** Задача `report` сверки, DQ и ретеншн (`alert_failure`: лог и Telegram); остальные задачи сверки, `shopflow_healthcheck` и проба канала только пишут в лог (`log_failure`). Алерт при `violation`, `lagging`, `error` и втором подряд `source_unavailable`; первый `source_unavailable` (ноутбук выключен) и пропущенный сенсор молчат. `report` считает `error` любую упавшую задачу выше по цепочке.
+- **Текст.** DAG и статус, задача и `run_id`, до 8 строк `• проверка / таблица: статус, нарушений N, например ключи`, ссылка на запуск в Airflow. Токена в тексте и в логах нет.
+- **Токен.** `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` вносятся вручную в `~/shopflow/.env` на Pi5 и доходят только до `airflow-scheduler`. После правки `.env`: `ssh pi5 'cd ~/shopflow && docker compose -f docker-compose.pi5.yml up -d --force-recreate --no-deps airflow-scheduler'`, затем `alerts-smoke.sh`.
+- **Проверка пути.** `trigger shopflow_data_quality simulate_violation=true` даёт `failed` и ровно одно сообщение, обычный запуск молчит.
+- **Что алерт не ловит.** Задача, убитая снаружи (`kill -9`, `mark failed`): callback не выполняется вообще, сообщения нет. Гибель supervisor (heartbeat timeout): callback идёт в dag-processor без токена, сообщения нет. Оба случая видны на дашборде: панель «Возраст последнего планового запуска» краснеет через 26 ч (ADR-0011, проверено на стенде 5.10).
+- **Канал.** Сеть Pi5 блокирует Telegram, доступ идёт через туннель AmneziaWG только на подсети Telegram (ADR-0012, установка — `infra/pi5/README.md`, раздел 8). Раз в 3 часа DAG `shopflow_alert_channel` делает GET без токена на Bot API и пишет результат; панель «Канал алертов: часов с последней успешной проверки» оранжевая при > 5 ч, красная при > 7 ч, 99999 — проверок не было.
+
+### Что делать при алерте
+
+| Сообщение | Что значит | Что делать |
+| --- | --- | --- |
+| `shopflow_data_quality — violation`, строки `проверка / таблица` | одна из 12 проверок FR-9 нашла нарушения | подсказка в шапке `airflow/dags/sql/dq/<NN>_<проверка>.sql` (`-- hint:`); строки запуска: `scripts/ch-query.sh "SELECT check_name, table_name, status, violations, details FROM shopflow.dq_check_results FINAL WHERE dag_id = 'shopflow_data_quality' AND run_id = '<run_id>' AND table_name != '' AND status != 'ok'"` |
+| `shopflow_reconciliation — violation` | строки Postgres и ClickHouse расходятся (нет в CH, другая версия, лишняя в CH) | ключи в сообщении и в `details` строки `dq_check_results`; повторить `scripts/pi5/reconcile-once.sh`; проверить Spark (`docker logs shopflow-spark-1`), карантин и `scripts/check_pipeline.sh` |
+| `shopflow_reconciliation — lagging` | в Postgres были изменения, а в `raw_events` после отсечки событий нет (NFR-3) | поток отстал или стоит: Spark, Connect, слот репликации (раздел 4), доступность Pi5 |
+| `shopflow_reconciliation — error` | ошибка конфигурации или упавшая задача цепочки; причина в `details` | лог задачи в Airflow UI, подключения (`airflow-smoke.sh`), пароли `recon_reader` и `airflow_reader` |
+| `shopflow_reconciliation — source_unavailable` (второй раз подряд) | ноутбук недоступен две ночи подряд | включить ноутбук, проверить `LAPTOP_HOST`, `pg_hba`, затем `trigger shopflow_reconciliation` |
+| `shopflow_retention — error` | TTL `raw_events` не сработал или не очищаются логи | `details` строки `retention` в `dq_check_results`, место на диске Pi5 |
+| сообщений нет, но панель красная | алерт не дошёл или задача убита снаружи | раздел 9: «Алерты не приходят» |
 
 ## 9. Аварии
 
@@ -304,6 +330,39 @@ $D exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server loc
 ```
 
 Если сломан источник (конфиг Debezium, SMT), исправить его: следующие события будут корректны, но битое остаётся в топике. Пропуск события — новый чекпойнт со `startingOffsets` за ним. **Процедура не прогонялась**, до применения согласовать и записать в ADR.
+
+### Алерты не приходят
+
+1. `ssh pi5 'bash -s' < scripts/pi5/alerts-smoke.sh`: `TELEGRAM_BOT_TOKEN set: yes`, токен только у `airflow-scheduler`, вхождений в логах 0.
+2. `ssh pi5 'bash -s -- trigger shopflow_alert_channel' < scripts/pi5/airflow-api.sh`: `success` значит, что из контейнера scheduler Telegram достижим; `failed` — туннель (ниже).
+3. Проба зелёная, а сообщения нет: лог задачи, `docker compose -f docker-compose.pi5.yml exec -T airflow-scheduler sh -c 'grep -rhE "Telegram|alert failed" /opt/airflow/logs/dag_id=<dag> | tail'`. в логе только класс ошибки и HTTP-код: `401` и `404` — неверный токен, `400` — неверный chat id, `403` — бот удалён из чата или заблокирован; `URLError` — нет сети до Telegram (туннель).
+
+### Туннель к Telegram не работает
+
+```bash
+ssh pi5 'systemctl is-active awg-quick@awg0; sudo awg show awg0 latest-handshakes | awk -v n=$(date +%s) "{print \"handshake age s:\", n-\$2}"'
+ssh pi5 'ip route get 149.154.166.110; ip route show default'       # первое — dev awg0, default route не менялся
+ssh pi5 'sudo systemctl restart awg-quick@awg0'                     # первый handshake бывает до ~20 с
+```
+
+После `reboot` юнит поднимается сам (`After=network-online.target`, `Restart=on-failure`, повтор через 30 с). Если handshake не появляется: кончилась подписка Amnezia, сервер сменил адрес или протокол блокируется. Выгрузить из приложения конфиг нового устройства и повторить `infra/pi5/README.md`, раздел 8 (`prepare-awg-config.py`, `install-awg.sh`); старое устройство отозвать в приложении. Туннель не должен открывать порты контейнеров: `sudo iptables -S DOCKER-USER | grep awg0` должен показывать `-i awg0 ... NEW -j DROP`.
+
+### Новый DAG не появился в Airflow
+
+Каталог DAG пересканируется раз в `refresh_interval` = 300 с. Ускорить: `ssh pi5 'cd ~/shopflow && docker compose -f docker-compose.pi5.yml restart airflow-dag-processor'` (задач он не выполняет), через минуту `airflow dags list`. Строки в списке повторяются по версиям DAG, это не дубли.
+
+### Панель Grafana с ошибкой или пустая
+
+```bash
+GRAFANA_PASSWORD=$(ssh pi5 "sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' ~/shopflow/.env") GRAFANA_URL=http://$PI5_HOST:3000 scripts/check_dashboard.py   # все панели через API, как браузер
+scripts/ch-query.sh "SELECT view, status, last_success_time, exception FROM system.view_refreshes ORDER BY view"   # refresh витрин
+```
+
+Данные витрин пусты, пока не отработали MV (после `up` до ~2 мин, цепочка ждёт `DEPENDS ON`). `SETTING_CONSTRAINT_VIOLATION` — раздел 5 (`queryTimeout`). Красная «Возраст последнего refresh» — цепочка стоит: ClickHouse, исключение в `view_refreshes`.
+
+### Память Pi5
+
+Пики сервисов смотреть по `memory.peak` и `anon` cgroup, не по `docker stats` (он пропускает короткие всплески, а `memory.events max` у сервисов с кешем растёт от заполнения кеша): `start-peak.sh` для пика на старте, `loadtest-m5.sh` под нагрузкой. Бюджет и замеры — ADR-0004. DAG для нагрузки запускать через REST API (`airflow-api.sh`), а не `airflow dags trigger` в scheduler: CLI добавляет ~300 МБ в его cgroup.
 
 ## 10. Остановка
 
