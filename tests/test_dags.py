@@ -27,7 +27,13 @@ import json
 from airflow.models.dagbag import DagBag
 bag = DagBag(dag_folder="/opt/airflow/dags", include_examples=False)
 errors = {k: str(v)[-500:] for k, v in bag.import_errors.items()}
-print("RESULT " + json.dumps({"errors": errors, "dags": sorted(bag.dag_ids)}))
+def names(task):
+    cb = task.on_failure_callback
+    cbs = cb if isinstance(cb, (list, tuple)) else [cb] if cb else []
+    return sorted(getattr(c, "__name__", repr(c)) for c in cbs)
+callbacks = {d.dag_id: {t.task_id: names(t) for t in d.tasks} for d in bag.dags.values()}
+print("RESULT " + json.dumps({"errors": errors, "dags": sorted(bag.dag_ids),
+                              "callbacks": callbacks}))
 """
 
 
@@ -58,3 +64,18 @@ def test_no_import_errors(dagbag):
 
 def test_expected_dags_present(dagbag):
     assert EXPECTED_DAGS <= set(dagbag["dags"])
+
+
+def test_failure_callbacks_follow_adr_0011(dagbag):
+    """Reconciliation alerts once per run (report), DQ and retention alert, healthcheck does not."""
+    callbacks = dagbag["callbacks"]
+    assert callbacks["shopflow_reconciliation"] == {
+        "wait_for_postgres": ["log_failure"],
+        "reconcile": ["log_failure"],
+        "recheck": ["log_failure"],
+        "report": ["alert_failure"],
+    }
+    assert callbacks["shopflow_data_quality"] == {"run_checks": ["alert_failure"]}
+    assert callbacks["shopflow_retention"] == {"retention": ["alert_failure"]}
+    assert callbacks["shopflow_healthcheck"] == {
+        "check_clickhouse": ["log_failure"], "check_postgres": ["log_failure"]}

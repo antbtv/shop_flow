@@ -135,7 +135,8 @@ def alert_failure(context) -> None:
         log.error("alert failed: %s", type(exc).__name__)
 
 
-# Until the DAGs choose per task (M5 task 5.10) a failure only goes to the log, as in M4.
+# The default only logs: a DAG that wants a message opts in with alert_failure (on the DAG's
+# default_args or on one task), so a new DAG never alerts, or alerts twice, by accident (ADR-0011).
 DEFAULT_ARGS = {
     "owner": "shopflow",
     "retries": 0,

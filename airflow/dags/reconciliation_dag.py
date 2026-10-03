@@ -14,10 +14,12 @@ import pendulum
 from airflow.providers.standard.sensors.python import PythonSensor
 from airflow.sdk import PokeReturnValue, dag, get_current_context, task
 from airflow.timetables.trigger import CronTriggerTimetable
-from shopflow_common.callbacks import DEFAULT_ARGS
+from shopflow_common.callbacks import DEFAULT_ARGS, alert_failure
 from shopflow_common.connections import postgres_available
 
 RECHECK_AFTER = timedelta(minutes=10)
+# Tasks report waits for: any of them failed means "a human is needed" (outcome.py).
+UPSTREAM = ("wait_for_postgres", "reconcile", "recheck")
 
 
 def _clients():
@@ -55,7 +57,7 @@ def _close(pg_conn, client) -> None:
     start_date=pendulum.datetime(2026, 10, 1, tz="Europe/Moscow"),
     catchup=False,
     max_active_runs=1,
-    default_args=DEFAULT_ARGS,
+    default_args=DEFAULT_ARGS,  # log_failure; only report alerts (one message per run, ADR-0011)
     tags=["shopflow", "fr-8"],
 )
 def shopflow_reconciliation():
@@ -130,7 +132,8 @@ def shopflow_reconciliation():
             _close(pg_conn, client)
         return PokeReturnValue(is_done=True, xcom_value=run)
 
-    @task(trigger_rule="all_done", execution_timeout=timedelta(minutes=5))
+    @task(trigger_rule="all_done", execution_timeout=timedelta(minutes=5),
+          on_failure_callback=alert_failure)
     def report() -> str:
         from airflow.exceptions import AirflowFailException
         from shopflow_checks.outcome import CHECK, reconciliation_outcome, should_fail
@@ -140,9 +143,10 @@ def shopflow_reconciliation():
         context = get_current_context()
         ti = context["ti"]
         states = ti.get_task_states(dag_id=ti.dag_id, run_ids=[ti.run_id])
-        sensor_state = (states.get(ti.run_id) or {}).get("wait_for_postgres")
+        upstream = states.get(ti.run_id) or {}
+        upstream = {t: upstream.get(t) for t in UPSTREAM}  # a missing state is not "failed"
         run = ti.xcom_pull(task_ids="recheck") or ti.xcom_pull(task_ids="reconcile")
-        outcome = reconciliation_outcome(sensor_state, run)
+        outcome = reconciliation_outcome(upstream["wait_for_postgres"], run, upstream)
 
         client = clickhouse_client()
         try:

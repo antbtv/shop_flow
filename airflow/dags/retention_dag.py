@@ -12,7 +12,7 @@ from datetime import timedelta
 import pendulum
 from airflow.sdk import dag, get_current_context, task
 from airflow.timetables.trigger import CronTriggerTimetable
-from shopflow_common.callbacks import DEFAULT_ARGS
+from shopflow_common.callbacks import DEFAULT_ARGS, alert_failure
 
 LOGS_ROOT = "/opt/airflow/logs"
 
@@ -24,7 +24,7 @@ LOGS_ROOT = "/opt/airflow/logs"
     start_date=pendulum.datetime(2026, 10, 1, tz="Europe/Moscow"),
     catchup=False,
     max_active_runs=1,
-    default_args=DEFAULT_ARGS,
+    default_args={**DEFAULT_ARGS, "on_failure_callback": alert_failure},
     tags=["shopflow", "nfr-5"],
 )
 def shopflow_retention():
