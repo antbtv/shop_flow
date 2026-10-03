@@ -4,6 +4,7 @@ takes: plugin macros expanded, queries run as grafana_reader) and prints rows or
 
 Usage: GRAFANA_URL=http://host:3000 GRAFANA_PASSWORD=... scripts/check_dashboard.py [from] [to]
        (user admin or GRAFANA_USER; from/to are Grafana time strings, default now-30d / now)
+       SHOW_VALUES=1 also prints the values of single-row panels to compare them by hand.
 Exit code 1 if any panel fails. The password is read from the environment, never printed.
 On Pi5 the password is GRAFANA_ADMIN_PASSWORD in ~/shopflow/.env (read it with sed, never print it).
 No dependency beyond the standard library.
@@ -38,14 +39,20 @@ def run(url: str, auth: str, dashboard: str, panel: dict, start: str, end: str) 
             results = json.load(resp)["results"]
     except urllib.error.HTTPError as exc:
         return False, f"HTTP {exc.code} {exc.read().decode()[:200]}"
-    problems, rows = [], 0
+    except urllib.error.URLError as exc:
+        return False, f"cannot reach Grafana: {exc.reason}"
+    problems, rows, shown = [], 0, []
     for ref, res in results.items():
         if res.get("error"):
             problems.append(f"{ref}: {res['error'][:200]}")
         for frame in res.get("frames", []):
             values = frame["data"]["values"]
             rows += len(values[0]) if values else 0
-    return (not problems), (" | ".join(problems) if problems else f"{rows} rows")
+            if os.environ.get("SHOW_VALUES") and values and len(values[0]) == 1:
+                names = [f["name"] for f in frame["schema"]["fields"]]
+                shown.append(", ".join(f"{n}={v[0]}" for n, v in zip(names, values, strict=True)))
+    text = f"{rows} rows" + ("  [" + "; ".join(shown) + "]" if shown else "")
+    return (not problems), (" | ".join(problems) if problems else text)
 
 
 def main() -> int:
