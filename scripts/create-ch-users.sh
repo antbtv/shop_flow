@@ -4,14 +4,17 @@
 # spark_writer: INSERT (+ SELECT for the connector) only on the tables Spark writes, LAN subnet only.
 # airflow_reader: SELECT for the checks, INSERT only into dq_check_results, Pi5 compose network only.
 # Skipped while PI5_COMPOSE_SUBNET is empty (it is pinned when Airflow is deployed, 4.5).
+# grafana_reader (M5, ADR-0011): SELECT on the dashboard marts and dq_check_results only, read-only
+# profile, Pi5 compose network only. Skipped while CLICKHOUSE_GRAFANA_PASSWORD is empty.
 # Passwords never leave this machine: only their sha256 goes to the server.
 # Usage: scripts/create-ch-users.sh   (CLICKHOUSE_SPARK_PASSWORD, LAN_SUBNET, CLICKHOUSE_AIRFLOW_PASSWORD,
-#        PI5_COMPOSE_SUBNET from env or .env)
+#        CLICKHOUSE_GRAFANA_PASSWORD, PI5_COMPOSE_SUBNET from env or .env)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source scripts/lib/clickhouse-env.sh
-for var in CLICKHOUSE_SPARK_PASSWORD LAN_SUBNET CLICKHOUSE_AIRFLOW_PASSWORD PI5_COMPOSE_SUBNET; do
+for var in CLICKHOUSE_SPARK_PASSWORD LAN_SUBNET CLICKHOUSE_AIRFLOW_PASSWORD CLICKHOUSE_GRAFANA_PASSWORD \
+           PI5_COMPOSE_SUBNET; do
     [[ -n ${!var:-} ]] || printf -v "$var" '%s' "$(env_value "$var")"
 done
 : "${CLICKHOUSE_SPARK_PASSWORD:?set CLICKHOUSE_SPARK_PASSWORD}" "${LAN_SUBNET:?set LAN_SUBNET}"
@@ -90,6 +93,35 @@ else
     )
 fi
 
+if [[ -z ${PI5_COMPOSE_SUBNET:-} || -z ${CLICKHOUSE_GRAFANA_PASSWORD:-} ]]; then
+    echo "skip grafana_reader: PI5_COMPOSE_SUBNET or CLICKHOUSE_GRAFANA_PASSWORD is not set (M5)"
+else
+    grafana_hash=$(printf '%s' "$CLICKHOUSE_GRAFANA_PASSWORD" | sha256sum | cut -d' ' -f1)
+    statements+=(
+        # readonly = 2 and not 1: the Grafana ClickHouse plugin sends settings with its queries
+        # (max_execution_time from the data source timeout) and fails under readonly = 1. CONST: the
+        # session cannot lower it. Every other setting is capped by MAX, so a panel cannot ask for
+        # more than a dashboard may cost on a CPU-bound Pi5 (ADR-0004, ADR-0011). No spill to disk:
+        # at 256 MiB the threshold would equal the limit, and the HDD should not take 30 s refreshes.
+        "CREATE SETTINGS PROFILE IF NOT EXISTS grafana_reader_profile SETTINGS readonly = 2 CONST, max_memory_usage = 268435456 MAX 268435456, max_execution_time = 30 MAX 30, max_threads = 2 MAX 2, max_rows_to_read = 20000000 MAX 20000000, read_overflow_mode = 'throw' CONST"
+        "ALTER SETTINGS PROFILE grafana_reader_profile SETTINGS readonly = 2 CONST, max_memory_usage = 268435456 MAX 268435456, max_execution_time = 30 MAX 30, max_threads = 2 MAX 2, max_rows_to_read = 20000000 MAX 20000000, read_overflow_mode = 'throw' CONST"
+        "CREATE USER IF NOT EXISTS grafana_reader IDENTIFIED WITH sha256_hash BY '$grafana_hash' HOST IP '$PI5_COMPOSE_SUBNET'"
+        "ALTER USER grafana_reader IDENTIFIED WITH sha256_hash BY '$grafana_hash' HOST IP '$PI5_COMPOSE_SUBNET' SETTINGS PROFILE 'grafana_reader_profile'"
+        "REVOKE ALL ON *.* FROM grafana_reader"
+        # The dashboard reads marts (tables filled by refreshable MVs), never stg_*, dim_*, fact_orders
+        # or raw_events, and not system.parts: table sizes come from dq_check_results rows
+        # (check_name = 'table_size'). Any Grafana admin can run any SQL as this user, so these
+        # grants are the trust boundary.
+        "GRANT SELECT ON shopflow.mart_revenue_daily TO grafana_reader"
+        "GRANT SELECT ON shopflow.mart_funnel_daily TO grafana_reader"
+        "GRANT SELECT ON shopflow.mart_cohort_retention TO grafana_reader"
+        "GRANT SELECT ON shopflow.mart_top_products_daily TO grafana_reader"
+        "GRANT SELECT ON shopflow.mart_inventory_current TO grafana_reader"
+        "GRANT SELECT ON shopflow.mart_pipeline_health TO grafana_reader"
+        "GRANT SELECT ON shopflow.dq_check_results TO grafana_reader"
+    )
+fi
+
 for q in "${statements[@]}"; do
     # Print the first words only: the hashes stay out of terminal logs.
     label=$(cut -d' ' -f1-4 <<<"$q")
@@ -98,7 +130,8 @@ for q in "${statements[@]}"; do
         echo "ok: $label"
     else
         out=${out//$hash/<hash>}
-        echo "FAILED: $label: ${out//${airflow_hash:-$hash}/<hash>}" >&2
+        out=${out//${airflow_hash:-$hash}/<hash>}
+        echo "FAILED: $label: ${out//${grafana_hash:-$hash}/<hash>}" >&2
         exit 1
     fi
 done
