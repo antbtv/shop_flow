@@ -1,11 +1,9 @@
--- Full recompute of mart_cohort_retention every 2 minutes, after mart_funnel_daily_mv: the
--- dependency only orders the refreshes, so two marts never hold memory at once (ADR-0009,
--- ADR-0011). Reads stg_orders only (customer, month, status): no items, no ASOF.
--- One row per (customer, month) is enough: the cohort is the earliest month of the customer.
-CREATE MATERIALIZED VIEW IF NOT EXISTS shopflow.mart_cohort_retention_mv -- noqa: PRS
-REFRESH EVERY 2 MINUTE DEPENDS ON shopflow.mart_funnel_daily_mv SETTINGS refresh_retries = 3
-TO shopflow.mart_cohort_retention
-AS
+-- Migration: mart_cohort_retention_mv ignores orders dated in the future (5.14 review). A refresh
+-- used to fail for good with `range would produce 4294967296 array elements` when one order was
+-- two or more months ahead. CREATE ... IF NOT EXISTS in 023 does not change an existing MV (Pi5),
+-- so the same query is applied here; on a fresh database 023 already has it and this is a no-op.
+-- Keep the query identical to 023 (tests/sql/test_cohorts.py compares them).
+ALTER TABLE shopflow.mart_cohort_retention_mv MODIFY QUERY -- noqa: PRS
 WITH
 active AS (
     SELECT

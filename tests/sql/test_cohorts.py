@@ -5,8 +5,13 @@ is built up to the current month, so all dates are relative to now (UTC), not fi
 """
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+
+DDL = Path(__file__).resolve().parents[2] / "clickhouse" / "ddl"
+CREATE_MV = DDL / "023_mart_cohort_retention_mv.sql"
+MIGRATION = DDL / "030_mart_cohort_retention_mv_future_orders.sql"
 
 
 def month(offset: int) -> str:
@@ -124,3 +129,43 @@ def test_customers_and_watermark_are_consistent(ch):
 
 def test_no_orders_gives_empty_mart(ch):
     assert grid(ch) == {}
+
+
+def test_an_order_dated_in_the_future_does_not_stop_the_refresh(ch):
+    # A broken clock (generator, laptop) or a manual insert can leave an order two or more months
+    # ahead: `range(toUInt32(negative))` used to wrap to 4 billion elements and fail every refresh
+    # (found by the 5.14 review). Such an order is not a return and not a cohort start.
+    orders(
+        ch,
+        (1, 1, "paid", at(-1), 1, 0),
+        (2, 1, "paid", at(2), 1, 0),   # customer 1, two months ahead: not a return
+        (3, 2, "paid", at(3), 1, 0),   # customer 2, only a future order: no cohort at all
+    )
+    got = grid(ch)
+    assert got == {month(-1): [(0, 1, 1, 0), (1, 1, 0, 1)]}
+
+
+def query_body(path: Path) -> str:
+    text = path.read_text()
+    return text[text.index("\nWITH\n"):].strip()
+
+
+def test_the_migration_carries_the_same_query_as_the_create_statement():
+    assert query_body(MIGRATION) == query_body(CREATE_MV)
+
+
+def test_the_migration_repairs_an_mv_that_still_has_the_old_query(ch):
+    """Pi5 had the old definition: CREATE ... IF NOT EXISTS does not change it, 030 does."""
+    migration = MIGRATION.read_text()
+    old = migration.replace(" AND created_at <= now('UTC')", "")
+    assert old != migration
+    ch.query(old)                                  # the MV as it was before the fix
+    try:
+        orders(ch, (1, 1, "paid", at(-1), 1, 0), (2, 2, "paid", at(3), 1, 0))
+        with pytest.raises(AssertionError, match="REFRESH_FAILED"):
+            grid(ch)
+        ch.query(migration)                        # what apply-ddl.sh runs on Pi5
+        assert grid(ch) == {month(-1): [(0, 1, 1, 0), (1, 1, 0, 1)]}
+    finally:
+        ch.query(migration)
+    ch.query(migration)                            # idempotent: the same statement again
