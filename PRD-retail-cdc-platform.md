@@ -219,7 +219,7 @@ flowchart LR
 ### 6.1 Сеть ноутбук ↔ Pi5
 
 - Pi5 получает статический IP (или DHCP-резервацию) в домашней сети.
-- Открытые порты на Pi5: ClickHouse HTTP (8123), ClickHouse native (9000), Airflow webserver (8080).
+- Открытые порты на Pi5: ClickHouse HTTP (8123), ClickHouse native (9000), Airflow webserver (8080), Grafana (3000, M5).
 - Аутентификация — базовая (домашняя сеть, наружу не пробрасывается); порты наружу не открывать.
 - Ноутбук (с Milestone 4, FR-8): Postgres (5432) на LAN-адресе ноутбука, `pg_hba` пускает из LAN только роль `recon_reader` (только SELECT) с IP Pi5. См. `docs/adr/0010-airflow-pi5-postgres-access.md`.
 
@@ -237,7 +237,7 @@ flowchart LR
 | Потоковая обработка | Spark Structured Streaming | Продолжение опыта на Flink в X5 — второй streaming-движок в портфолио |
 | OLAP-хранилище | ClickHouse | Продолжает историю про интервью в SberData |
 | Оркестрация | Airflow | Знаком по прошлому опыту, стандарт индустрии для DAG-оркестрации |
-| Дашборд | Grafana или Superset | Открытый вопрос — см. раздел 13 |
+| Дашборд | Grafana | Выбрана 2026-10-03: на Pi5 работает при выключенном ноутбуке (NFR-6), ~0,4 ГБ в резерве ADR-0004. Superset отклонён: ≥ 1 ГБ и только на ноутбуке. См. `docs/adr/0011-grafana-pi5-telegram-alerts.md` |
 
 ## 8. Структура репозитория
 
@@ -262,7 +262,8 @@ retail-cdc-platform/
 │       ├── reconciliation_dag.py
 │       ├── data_quality_dag.py
 │       └── retention_dag.py
-├── dashboards/
+├── grafana/                    # образ Grafana с закреплённым плагином ClickHouse и provisioning (ADR-0011)
+├── dashboards/                 # JSON дашбордов (provisioning из git)
 ├── infra/
 │   ├── pi5/                    # конфиги хоста Pi5 (fstab, daemon.json, ufw, systemd) и runbook
 │   └── laptop/                 # sysctl ноутбука для доступа Pi5 к Postgres (ADR-0010)
@@ -336,8 +337,8 @@ CLICKHOUSE_AIRFLOW_PASSWORD=changeme
 - [ ] DAG ретеншна/TTL
 
 **Milestone 5 — наблюдаемость и презентация**
-- [ ] Представления для когорт (FR-6), топа товаров и остатков (FR-7) поверх `fact_orders` и `stg_inventory` из M3
-- [ ] Дашборд (Grafana/Superset) — витрины из FR-4–FR-7
+- [ ] Витрины (refreshable MV) для когорт (FR-6), топа товаров и остатков (FR-7) поверх `stg_orders`, `fact_orders` и `stg_inventory` из M3
+- [ ] Дашборд Grafana на Pi5 (ADR-0011) — витрины из FR-4–FR-7 и здоровье пайплайна
 - [ ] Алерты в Telegram (FR-11)
 - [ ] README с диаграммой архитектуры и инструкцией по запуску
 
@@ -358,4 +359,4 @@ CLICKHOUSE_AIRFLOW_PASSWORD=changeme
 
 ## 13. Открытые вопросы
 
-- **Дашборд:** Grafana или Superset — не зафиксировано.
+Открытых вопросов нет. Дашборд: Grafana на Pi5 (решение 2026-10-03, ADR-0011).

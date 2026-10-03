@@ -7,7 +7,7 @@ sudo ufw allow from <LAN_CIDR> to any port 22 proto tcp comment 'ssh from LAN'
 sudo ufw enable
 ```
 
-ufw protects host services only. Container ports (8123, 9000, 8080) are protected by binding to `$PI5_HOST` in compose and by the `DOCKER-USER` rule from `after.rules.snippet`.
+ufw protects host services only. Container ports (8123, 9000, 8080, 3000 Grafana) are protected by binding to `$PI5_HOST` in compose and by the `DOCKER-USER` rule from `after.rules.snippet`.
 
 ## `after.rules` snippet
 

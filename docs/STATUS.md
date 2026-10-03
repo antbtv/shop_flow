@@ -6,7 +6,7 @@
 - Брокер: Kafka (KRaft), см. `docs/adr/0001-message-broker-kafka.md`
 - Хранилище Pi5: ОС на SD, данные на внешнем USB HDD 500 ГБ, см. `docs/adr/0002-pi5-storage-external-hdd.md`
 - Сеть Pi5: bind портов на LAN-IP, ufw для хоста, `DOCKER-USER` для контейнеров, см. `docs/adr/0003-pi5-network-exposure.md`
-- Дашборд: Grafana или Superset, не решено (PRD, раздел 13). Допущение: на Pi5 резерв 0,5 ГБ под Grafana; Superset, если выберем, запускается на ноутбуке.
+- Дашборд: Grafana на Pi5 (решение пользователя 2026-10-03), плагин ClickHouse в образе вне тома, `grafana_reader` только на таблицы-витрины и `dq_check_results`; алерты Telegram из `on_failure_callback` задачи (scheduler), один алертящий callback на DAG; когорты, топ и остатки — refreshable MV в той же цепочке, см. `docs/adr/0011-grafana-pi5-telegram-alerts.md`
 - Память Pi5: жёсткие `mem_limit`, LocalExecutor, урезанный ClickHouse, см. `docs/adr/0004-pi5-memory-budget.md`
 - Airflow и сверка: Postgres ноутбука на LAN-адресе, `pg_hba` пускает только `recon_reader` (только SELECT) с IP Pi5; FAB, образ собирается на Pi5; сверка — отсечка `T` по часам PG, бакеты отпечатков как фильтр, арбитраж по ключу; сенсор «источник недоступен» отдельно от `mismatch` и `lagging`; `airflow_reader` без `readonly`, с constraints, см. `docs/adr/0010-airflow-pi5-postgres-access.md`
 - CDC: полный конверт Debezium в JSON без схем, 1 партиция на топик, fsync Kafka на каждое сообщение, REPLICA IDENTITY FULL на 5 таблицах, см. `docs/adr/0005-cdc-contract.md`
@@ -557,23 +557,28 @@
   - После вливания PR `milestone-4` → `master` пользователем создать `milestone-5` от `master`.
   - Сделано (2026-10-03): PR #5 `milestone-4` → `master` влит пользователем, локальный `master` fast-forward до `4b852ee`, ветка `milestone-5` от `master`.
   - Приёмка пройдена: `git log master..milestone-4` пусто, текущая ветка `milestone-5`.
-- [ ] **5.1. ADR-0011 и ревью `architect`** (~1 ч)
-  - Пункты 1–7 выше. Правки PRD 6.1, 8 (`dashboards/`), 13 (вопрос закрыт), `.env.example`, `pi5.env.example`.
+- [x] **5.1. ADR-0011 и ревью `architect`** (~1 ч)
+  - Пункты 1–7 выше. Правки PRD 6.1, 7, 8 (`grafana/`, `dashboards/`), 10, 13 (вопрос закрыт), `.env.example`, `pi5.env.example`, ADR-0004 (строка Grafana), ADR-0007 (`rsync`: `grafana/`, `dashboards/`), `rules.md` (порт 3000).
   - Приёмка: вердикт «принять» или «принять с правками», правки внесены.
+  - Сделано (2026-10-03): ADR-0011 принят с правками (8 блокеров, 16 желательных). Блокеры: callback задачи выполняется в scheduler только при сбое из кода задачи (задачу, помеченную `failed` извне, обрабатывает dag-processor без секретов — принятое ограничение, компенсация — панель возраста плановых запусков); плагин в `GF_PATHS_PLUGINS` вне тома, без скачивания при старте; `fact_orders` читают две MV за период — осознанное отступление от порога ADR-0009, пересмотр по замеру 5.3; `readonly = 2` и `queryTimeout` ≤ `max_execution_time` профиля, без спилла; `shopflow_healthcheck` не алертит, явные `alert_failure`/`log_failure` вместо таблицы DAG; гранты `grafana_reader` перечислены поимённо, `system.parts` не выдаётся; секреты Grafana (`GRAFANA_ADMIN_PASSWORD`, `GRAFANA_SECRET_KEY`, `CLICKHOUSE_GRAFANA_PASSWORD`); здоровье пайплайна — через `mart_pipeline_health`, а не через `stg_*`.
+  - Список проверок на стенде (не предполагать): где выполняется callback при heartbeat timeout в Airflow 3.1; настройки, которые шлёт плагин, и `queryTimeout` по умолчанию; `maxOpenConns`; путь `mask_secret` в 3.1; `GF_PLUGINS_PREINSTALL_DISABLED`; `wget`/`curl` в образе Grafana.
 - [ ] **5.2. Когортное удержание** (~1 ч)
   - `clickhouse/ddl/022_mart_cohort_retention*.sql`: когорта = месяц первого заказа клиента, период = месяцы с первого заказа, `customers` и `returned`; отменённые не считаются; неполный текущий период помечен.
-  - Приёмка: `pytest -q tests/sql/test_cohorts.py` (повтор в том же месяце не возврат, отмена не считается, удалённый заказ не считается), мутация «без исключения отмен» ловится; `sqlfluff lint clickhouse/ddl` чистый.
+  - По ADR-0011: источник `stg_orders FINAL`, полная сетка периодов (нули, не дыры), `is_partial` по диагонали текущего месяца, refreshable MV в цепочке (период 2 мин, после `mart_funnel_daily_mv`).
+  - Приёмка: `pytest -q tests/sql/test_cohorts.py` (повтор в том же месяце не возврат, отмена не считается, удалённый заказ не считается, пустые периоды = 0, `is_partial`), мутация «без исключения отмен» ловится; `sqlfluff lint clickhouse/ddl` чистый.
   - Закрывает: FR-6. Риск: определение удержания фиксируем в ADR; синтетика может давать плоские когорты.
-- [ ] **5.3. Топ товаров и остатки** (~1 ч)
-  - Топ товаров за 7 и 30 дней (выручка, количество, категория на момент заказа из `fact_orders`); текущие остатки по складам (`stg_inventory FINAL`, `is_deleted = 0`, `dim_products` с `is_current`); «низкий остаток» по константе-порогу с комментарием.
-  - Приёмка: `pytest -q tests/sql/test_top_stock.py` (порядок топа, отменённые не считаются, удалённая строка остатка не видна, товар без версии — `unknown`).
+- [ ] **5.3. Топ товаров, остатки, здоровье пайплайна** (~1,5 ч)
+  - Refreshable MV по ADR-0011: `mart_top_products_daily` (зерно день × товар × категория, `product_name`, количество и выручка без отменённых и с ними), `mart_inventory_current` (`stg_inventory FINAL`, `is_deleted = 0`, `LEFT JOIN dim_products` на `is_current`, `is_low` по константе-порогу с комментарием), `mart_pipeline_health` (`max(event_time)` по `stg_*`, состояние MV из `system.view_refreshes`).
+  - Приёмка: `pytest -q tests/sql/test_top_stock.py` (порядок топа, отменённые не считаются, удалённая строка остатка не видна, товар и имя товара без версии — `unknown`); `scripts/bench-marts.sh` (расширить новыми MV; DDL подхватывается из `clickhouse/ddl/`) на 1 млн заказов: время цепочки refresh и пик памяти записаны, решение по порогу ADR-0009 (цепочка > 10 с или > 600 МиБ → `fact_orders` таблицей).
+  - Риск: два прохода факта за период.
   - Закрывает: FR-7.
 - [ ] **5.4. Пользователь `grafana_reader`** (~45 мин)
   - `scripts/create-ch-users.sh`: SELECT на витрины, представления и `dq_check_results`, `HOST IP` подсети compose Pi5, constraints.
-  - Приёмка: на временном ClickHouse `SHOW GRANTS` совпадает с ADR; витрины читаются, `INSERT` и `SELECT` из `stg_orders`/`raw_events` — `ACCESS_DENIED`; превышение `max_memory_usage` — `SETTING_CONSTRAINT_VIOLATION`; скрипт идемпотентен.
+  - SELECT поимённо: `mart_revenue_daily`, `mart_funnel_daily`, `mart_cohort_retention`, `mart_top_products_daily`, `mart_inventory_current`, `mart_pipeline_health`, `dq_check_results`; профиль `readonly = 2`, `max_memory_usage` 256 МиБ, `max_execution_time` 30 с, `max_threads` 2, `max_rows_to_read` 20 млн, без спилла.
+  - Приёмка: на временном ClickHouse `SHOW GRANTS` совпадает с ADR; витрины читаются, `INSERT` и `SELECT` из `stg_*`, `raw_events`, `fact_orders`, `dim_*` — `ACCESS_DENIED`; превышение `max_memory_usage` и `max_execution_time` — `SETTING_CONSTRAINT_VIOLATION`; скрипт идемпотентен.
 - [ ] **5.5. Grafana в `docker-compose.pi5.yml` и provisioning** (~1,5 ч)
-  - Образ с закреплённым плагином ClickHouse, `mem_limit` по ADR-0011, том на HDD, порт `${PI5_HOST}:3000`, provisioning источника и дашбордов из `dashboards/`, админ-пароль из `.env`; `rsync`-список в ADR-0007, правила `ufw` и `DOCKER-USER`.
-  - Приёмка: `docker compose -f docker-compose.pi5.yml config -q` проходит; локально (`PI5_HOST=127.0.0.1`, временный ClickHouse) Grafana healthy, health источника данных OK, `curl /api/dashboards` без токена — 401.
+  - `grafana/Dockerfile` (тег, плагин `linux_arm64` с sha256 в `GF_PATHS_PLUGINS` вне тома), `mem_limit` 384m, том на HDD, порт `${PI5_HOST}:3000`, provisioning источника и дашбордов из `dashboards/`, админ-пароль из `.env`; `rsync`-список в ADR-0007, правила `ufw` и `DOCKER-USER`.
+  - Приёмка: `docker compose -f docker-compose.pi5.yml config -q` проходит; локально (`PI5_HOST=127.0.0.1`, временный ClickHouse) Grafana healthy, health источника данных OK, `curl /api/dashboards` без токена — 401; в логе старта нет обращений к grafana.com, `grafana cli plugins ls` показывает закреплённую версию; в `system.query_log` (`Settings`) у запросов `grafana_reader` нет настроек выше MAX профиля.
   - Закрывает: FR-10 (инфраструктура), NFR-7. Риск: сборка и плагин на arm64.
 - [ ] **5.6. Деплой Grafana на Pi5** (~45 мин, команды выполняет пользователь)
   - Приёмка: сервис `healthy`; `ss -tlnp` — 3000 только на `$PI5_HOST`; `docker stats` в пределах лимита, ClickHouse не задет; источник данных `OK` в UI; после `reboot` всё поднялось.
@@ -584,15 +589,16 @@
   - Закрывает: FR-4, FR-5, FR-10.
 - [ ] **5.8. Дашборд: когорты, топ, остатки, здоровье пайплайна** (~1,5 ч)
   - Тепловая карта удержания (FR-6), топ товаров и остатки с подсветкой низких (FR-7), свежесть `stg_*` (NFR-3), статусы `dq_check_results`, `table_size`.
-  - Приёмка: панели возвращают данные; свежесть совпадает с `max(event_time)`; статусы совпадают с последним запуском DAG; запросы в профиле `grafana_reader`.
-  - Закрывает: FR-6, FR-7, FR-10. Риск: `dq_check_results` читать с учётом `ReplacingMergeTree` (`FINAL`).
+  - Свежесть — `now() - source_watermark` витрин и `mart_pipeline_health` (прав на `stg_*` у `grafana_reader` нет). Статусы — последний **плановый** запуск по `dag_id`, затем строки его `run_id`; ручные запуски отдельно. Панель «возраст последнего планового запуска по `dag_id`», красная при > 26 ч (сторож Airflow).
+  - Приёмка: панели возвращают данные; свежесть совпадает с `max(event_time)` из прямого запроса под `shopflow`; статусы совпадают с последним плановым запуском DAG; ручной запуск с `simulate_violation` не красит плановую секцию; запросы в профиле `grafana_reader`.
+  - Закрывает: FR-6, FR-7, FR-10, NFR-3. Риск: `dq_check_results` читать только через `FINAL`.
 - [ ] **5.9. Клиент Telegram и `on_failure`** (~1 ч)
-  - `airflow/dags/shopflow_common/telegram.py` (stdlib, таймауты, экранирование, маскирование токена), `callbacks.py` шлёт DAG, задачу, run_id, ссылку на UI; сбой отправки в лог, состояние задачи не меняет; токен только в окружении scheduler.
-  - Приёмка: `pytest -q tests/test_telegram.py` на локальном фейковом HTTP-сервере: сообщение верно, при таймауте и 500 callback не падает, токена нет в логе и тексте исключения; мутация «без маскирования» ловится.
+  - `airflow/dags/shopflow_common/telegram.py` (stdlib, таймаут 10 с, один повтор, без `parse_mode`, `raise ... from None`, в лог только тип и код, `mask_secret`), `callbacks.py`: `alert_failure` (лог + Telegram) и `log_failure` (только лог), текст — DAG, задача, `run_id`, статус, ссылка на UI, ≤ 3 ключей; статус и `details` из `dq_check_results FINAL` по `run_id` с откатом на текст исключения; сбой отправки — ERROR в лог, состояние задачи не меняет; токен только у scheduler.
+  - Приёмка: `pytest -q tests/test_telegram.py` на локальном фейковом HTTP-сервере: сообщение верно, при таймауте и 500 callback не падает, токена нет во всём логе задачи (грепается весь лог, не только исключение); мутации «без `from None`» и «без маскирования» ловятся.
   - Закрывает: FR-11.
 - [ ] **5.10. Правила алертов** (~1 ч)
-  - `on_failure` в три DAG и `shopflow_healthcheck`; алерт при `violation`, `lagging`, `error`, втором подряд `source_unavailable`; первый `source_unavailable` без алерта; один алерт на запуск DAG.
-  - Приёмка: `pytest -q tests/test_alerts.py` по каждому статусу из `outcome.py`; `DagBag` без ошибок.
+  - Явное назначение callback: `report` сверки — `alert_failure`, остальные её задачи — `log_failure`; DQ и ретеншн — `alert_failure`; `shopflow_healthcheck` — только `log_failure`. Алерт при `violation`, `lagging`, `error`, втором подряд `source_unavailable`; первый `source_unavailable` и `skipped` сенсор — без алерта. `report` явно проверяет состояния всех upstream-задач: любое `failed` → `error`.
+  - Приёмка: `pytest -q tests/test_alerts.py` по каждому статусу из `outcome.py`, тест «любое upstream `failed` даёт `error`»; `DagBag` без ошибок; на стенде `kill -9` процесса задачи — в логе dag-processor callback отработал без токена и не упал.
   - Закрывает: FR-11.
 - [ ] **5.11. Деплой алертов и живая проверка на Pi5** (~1 ч, команды выполняет пользователь)
   - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` в `.env` Pi5 вручную (Claude `.env` не трогает).

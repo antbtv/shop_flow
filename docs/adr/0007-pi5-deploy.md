@@ -3,9 +3,9 @@
 - **Статус:** принято (2026-09-26), ревью `architect`: принять с правками, правки внесены.
 - **Контекст:** на Pi5 работают ClickHouse (M1) и Airflow (M4) по `docker-compose.pi5.yml`. У Claude нет доступа к Pi5, команды выполняет пользователь. У Pi5 нет доступа к GitHub, и давать его не нужно. Секреты только в `.env`.
 - **Решение:**
-  - **Доставка файлов.** Через `rsync` в `~/shopflow` на Pi5 по явному списку путей: `docker-compose.pi5.yml`, `clickhouse/`, с M4 `airflow/` (образ собирается на Pi5, ADR-0010).
+  - **Доставка файлов.** Через `rsync` в `~/shopflow` на Pi5 по явному списку путей: `docker-compose.pi5.yml`, `clickhouse/`, с M4 `airflow/` (образ собирается на Pi5, ADR-0010), с M5 `grafana/` и `dashboards/` (ADR-0011).
     - Исключения: `--exclude='.env' --exclude='.git' --exclude='.venv'`.
-    - `--delete` допустим только внутри `clickhouse/` и `airflow/`, но не на корне `~/shopflow`.
+    - `--delete` допустим только внутри `clickhouse/`, `airflow/`, `grafana/` и `dashboards/`, но не на корне `~/shopflow`.
     - Источник истины — git на ноутбуке, на Pi5 файлы не правятся.
     - `config.d/*.xml` с режимом 644: их читает пользователь контейнера (uid 101).
   - **Секреты.** На Pi5 отдельный `~/shopflow/.env` (`chmod 600`) только с переменными Pi5: `PI5_HOST`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` (в M4 добавятся переменные Airflow). Ноутбучные секреты (Postgres, Debezium) на Pi5 не попадают. Исключение с M4: пароль роли только для чтения `recon_reader` для сверки, см. ADR-0010. При смене IP Pi5 правятся оба `.env`.

@@ -12,6 +12,7 @@
     | Airflow api-server | 768m | 302 МБ |
     | Airflow dag-processor | 512m | 227 МБ |
     | Postgres (метабаза Airflow) | 256m | 50 МБ |
+    | Grafana (M5, ADR-0011) | 384m на grafana-server и плагин ClickHouse | замер в 5.12 |
 
   - ClickHouse: `max_server_memory_usage` 2 ГБ; зазор ~0,75 ГБ до `mem_limit` под отображённый бинарник и страничный кеш, которые тоже считаются в cgroup. `mark_cache_size` 256 МБ, `index_mark_cache_size` 64 МБ, `uncompressed_cache_size` 0. System-логи `trace_log`, `metric_log`, `asynchronous_metric_log`, `text_log`, `query_thread_log`, `query_views_log`, `processors_profile_log` выключены; `query_log` и `part_log` с TTL 7 дней. `background_pool_size` по умолчанию (уменьшение ломает старт, код 36).
   - Airflow 3.1: LocalExecutor, `parallelism` 2, метабаза на Postgres, 1 воркер api-server, без примеров DAG. Задачи выполняются внутри контейнера scheduler, ~340 МБ на задачу.
