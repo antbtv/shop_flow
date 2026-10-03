@@ -109,6 +109,8 @@ ssh pi5 'bash -s' < scripts/pi5/grafana-smoke.sh
 
 `up -d grafana` другие сервисы не трогает. Новых правил файрвола не нужно: `DOCKER-USER` не зависит от порта (ADR-0003), порт 3000 публикуется только на `$PI5_HOST`. Образ собирается на Pi5 и скачивает плагин (закреплены версия и sha256, ADR-0011); после сборки интернет Grafana не нужен. Обновление Grafana или плагина — новые версия и sha256 в `grafana/Dockerfile`, повтор `build grafana` и `up -d grafana`.
 
+Дашборд — `dashboards/shopflow.json`, его генерирует `scripts/build_dashboard.py` (правим скрипт, не JSON; `tests/test_dashboards.py` ловит расхождение). После `rsync dashboards/` провайдер подхватывает файл за ≤ 60 с. Проверка, что все панели отвечают, с ноутбука: `GRAFANA_PASSWORD=$(ssh pi5 "sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' ~/shopflow/.env") GRAFANA_URL=http://$PI5_HOST:3000 python3 scripts/check_dashboard.py`.
+
 Если панели показывают `SETTING_CONSTRAINT_VIOLATION`: `queryTimeout` и `dialTimeout` источника должны быть минимум на 5 с ниже `max_execution_time` профиля `grafana_reader` (30 с): драйвер плагина прибавляет к ним ~5 с.
 
 `scripts/load_sample_events.sh` (M1, одноразовый) копирует события из Kafka в `raw_events`; повторный запуск безопасен, дубли схлопываются.
