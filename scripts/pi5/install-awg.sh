@@ -15,13 +15,14 @@ CONF_DIR=${CONF_DIR:-/etc/amnezia/amneziawg}
 UFW_AFTER=${UFW_AFTER:-/etc/ufw/after.rules}
 OWNER=${OWNER-root:root}            # empty: do not chown (tests run without root)
 SKIP_SYSTEM=${SKIP_SYSTEM:-0}       # 1: no systemctl, ufw, iptables, probes (tests)
+NO_ROOT_CHECK=${NO_ROOT_CHECK:-0}   # 1: tests of steps 5-7 with fake commands in PATH
 IFACE=awg0
 PROBE_URL=https://api.telegram.org/
 # The IPv4 ranges of Telegram (https://core.telegram.org/resources/cidr.txt).
 ALLOWED='91.108.4.0/22 91.108.8.0/22 91.108.12.0/22 91.108.16.0/22 91.108.20.0/22 91.108.56.0/22 91.105.192.0/23 149.154.160.0/20 185.76.151.0/24'
 
 die() { echo "error: $*" >&2; exit 1; }
-[[ $SKIP_SYSTEM == 1 || $EUID -eq 0 ]] || die "run as root (sudo)"
+[[ $SKIP_SYSTEM == 1 || $NO_ROOT_CHECK == 1 || $EUID -eq 0 ]] || die "run as root (sudo)"
 
 if [[ ${1:-install} == uninstall ]]; then
     if [[ $SKIP_SYSTEM != 1 ]]; then
@@ -33,11 +34,22 @@ if [[ ${1:-install} == uninstall ]]; then
     exit 0
 fi
 
+# ~/awg-stage belongs to a normal user, who could swap a file between the checks and the install
+# (checked as root, then root installs whatever is there by then). Everything is copied once into
+# a private directory, then checked and installed from there.
+WORK=$(mktemp -d)
+chmod 700 "$WORK"
+trap 'rm -rf "$WORK"' EXIT
+for f in amneziawg-go awg awg-quick SHA256SUMS awg-quick@.service; do
+    [[ -f $STAGE/$f ]] && cp "$STAGE/$f" "$WORK/$f"
+done
+[[ -f $STAGE/$IFACE.conf ]] && cp "$STAGE/$IFACE.conf" "$WORK/$IFACE.conf"
+
 echo "== 1. binaries: sha256"
-(cd "$STAGE" && sha256sum -c SHA256SUMS) || die "sha256 mismatch: rebuild and ship again"
+(cd "$WORK" && sha256sum -c SHA256SUMS) || die "sha256 mismatch (or a file is missing): rebuild and ship again"
 
 echo "== 2. config check (key material is not printed)"
-CONF_SRC=$STAGE/$IFACE.conf
+CONF_SRC=$WORK/$IFACE.conf
 if [[ -f $CONF_SRC ]]; then
     python3 - "$CONF_SRC" $ALLOWED <<'PY' || die "the config is not acceptable, see above"
 import ipaddress, re, sys
@@ -51,6 +63,13 @@ if re.search(r"^\s*DNS\s*=", text, flags=re.M | re.I):
     bad.append("a DNS= line (it would take over the DNS of the host and of Docker)")
 if re.search(r"^\s*Table\s*=", text, flags=re.M | re.I):
     bad.append("a Table= line")
+# Hooks run as root: only the TCPMSS clamp of the template is allowed, nothing else.
+MSS = "iptables -t mangle {op} FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
+for key, expected in (("PostUp", [MSS.format(op="-A")]), ("PostDown", [MSS.format(op="-D")]),
+                      ("PreUp", []), ("PreDown", []), ("SaveConfig", [])):
+    values = [v.strip() for v in re.findall(rf"^\s*{key}\s*=\s*(.*)$", text, flags=re.M | re.I)]
+    if values != expected:
+        bad.append(f"{key} is not the TCPMSS clamp of the template (hooks run as root)")
 lines = re.findall(r"^\s*AllowedIPs\s*=\s*(.+)$", text, flags=re.M | re.I)
 if len(lines) != 1:
     bad.append("AllowedIPs must be given exactly once")
@@ -74,17 +93,17 @@ PY
 elif [[ -f $CONF_DIR/$IFACE.conf ]]; then
     echo "  no staged $IFACE.conf: keeping the installed $CONF_DIR/$IFACE.conf"
 else
-    die "no $CONF_SRC and no installed config"
+    die "no staged $IFACE.conf and no installed config"
 fi
 
 echo "== 3. install files"
 install -d -m 0755 "$BIN_DIR" "$UNIT_DIR"
-for f in amneziawg-go awg awg-quick; do install -m 0755 "$STAGE/$f" "$BIN_DIR/$f"; done
-install -m 0644 "$STAGE/awg-quick@.service" "$UNIT_DIR/awg-quick@.service"
+for f in amneziawg-go awg awg-quick; do install -m 0755 "$WORK/$f" "$BIN_DIR/$f"; done
+install -m 0644 "$WORK/awg-quick@.service" "$UNIT_DIR/awg-quick@.service"
 install -d -m 0700 "$CONF_DIR"
 if [[ -f $CONF_SRC ]]; then
     install -m 0600 "$CONF_SRC" "$CONF_DIR/$IFACE.conf"
-    rm -f "$CONF_SRC"                # the staged copy held the keys
+    rm -f "$STAGE/$IFACE.conf"       # the staged copy held the keys (the private copy goes with WORK)
 fi
 if [[ -n $OWNER ]]; then
     chown "$OWNER" "$CONF_DIR" "$CONF_DIR/$IFACE.conf"
@@ -123,11 +142,23 @@ echo "  iptables DOCKER-USER has the $IFACE DROP rule"
 
 echo "== 5. start the tunnel"
 systemctl daemon-reload
-systemctl enable --now "awg-quick@$IFACE"
-for _ in $(seq 20); do
-    stamp=$(/usr/local/bin/awg show "$IFACE" latest-handshakes 2>/dev/null | awk '{print $2; exit}')
+systemctl enable "awg-quick@$IFACE" >/dev/null 2>&1
+# A oneshot unit with RemainAfterExit stays "active" while the old tunnel runs, so `enable --now`
+# would not apply a new config or new binaries: a running tunnel is restarted.
+if systemctl is-active --quiet "awg-quick@$IFACE"; then
+    echo "  the unit was running: restarting it to apply the new files"
+    systemctl restart "awg-quick@$IFACE"
+else
+    systemctl start "awg-quick@$IFACE"
+fi
+# From here on only diagnostics: a failing awg, ip or curl must not hide the lines after it
+# (under `set -e -o pipefail` a failed probe used to end the script silently).
+set +e
+stamp=""
+for _ in $(seq "${HANDSHAKE_TRIES:-20}"); do
+    stamp=$("$BIN_DIR/awg" show "$IFACE" latest-handshakes 2>/dev/null | awk '{print $2; exit}')
     [[ -n ${stamp:-} && $stamp -gt 0 ]] && break
-    sleep 2
+    sleep "${HANDSHAKE_WAIT:-2}"
 done
 echo "  unit: $(systemctl is-active "awg-quick@$IFACE")"
 echo "  last handshake: ${stamp:-none} (epoch seconds, 0 or none = no handshake)"
